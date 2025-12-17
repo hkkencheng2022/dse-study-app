@@ -9,7 +9,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- 2. API Key 設定 (優先從 Secrets 讀取) ---
+# --- 2. API Key 設定 ---
 api_key = None
 if "DEEPSEEK_API_KEY" in st.secrets:
     api_key = st.secrets["DEEPSEEK_API_KEY"]
@@ -44,7 +44,7 @@ with st.sidebar:
 tab_factory, tab_study = st.tabs(["🏭 步驟一：官網資料清洗", "🎓 步驟二：智能温習室"])
 
 # ==========================================
-# TAB 1: 官網資料清洗 (The Bridge)
+# TAB 1: 官網資料清洗
 # ==========================================
 with tab_factory:
     st.header(f"🚀 {subject} - 資料清洗橋樑")
@@ -74,7 +74,6 @@ with tab_factory:
         st.subheader("2. (選填) 備份存檔")
         st.write("如果你想把整理好的筆記存成檔案，可以在這裡貼上並下載：")
         
-        # 使用 Form 防止誤觸
         with st.form("save_file_form"):
             text_to_save = st.text_area("貼上 DeepSeek 內容...", height=200)
             submitted = st.form_submit_button("💾 下載 .txt 檔")
@@ -89,7 +88,7 @@ with tab_factory:
             )
 
 # ==========================================
-# TAB 2: 智能温習室 (Study Room)
+# TAB 2: 智能温習室
 # ==========================================
 with tab_study:
     st.header(f"🎓 {subject} - 衝刺模式")
@@ -100,7 +99,6 @@ with tab_study:
     with col_input:
         st.markdown("### 📥 載入溫習資源")
         
-        # 1. 筆記輸入方式選擇
         input_method = st.radio(
             "選擇筆記來源：", 
             ["📋 直接貼上文字", "📂 上傳 .txt 檔案"], 
@@ -120,7 +118,6 @@ with tab_study:
             if notes_file:
                 notes_text = notes_file.read().decode("utf-8")
 
-        # 2. 音頻上傳 (始終保留)
         st.markdown("---")
         audio_file = st.file_uploader("上傳 NotebookLM 音檔 (選填)", type=["mp3", "wav"])
     
@@ -179,11 +176,11 @@ with tab_study:
                         response = st.write_stream(stream)
                     st.session_state.messages.append({"role": "assistant", "content": response})
 
-            # --- Sub Tab 3: 模擬試卷 (升級版) ---
+            # --- Sub Tab 3: 模擬試卷 (重點修改部分) ---
             with sub_tab3:
                 st.subheader("🔥 題目生成器")
                 
-                # 第一行：設定區
+                # 設定區
                 row1_col1, row1_col2, row1_col3 = st.columns([2, 2, 1])
                 
                 with row1_col1:
@@ -193,7 +190,6 @@ with tab_study:
                     q_type = st.radio("題型", ["MC (多項選擇)", "LQ (長題目)"], horizontal=True)
                 
                 with row1_col3:
-                    # 數量輸入：如果沒輸入(預設)，就是 1 即逐條
                     num_questions = st.number_input("題目數量", min_value=1, max_value=20, value=1, step=1)
 
                 st.markdown("---")
@@ -201,22 +197,28 @@ with tab_study:
                 if st.button(f"🚀 生成 {num_questions} 條題目"):
                      with st.spinner(f"DeepSeek 正在參考筆記，設計 {num_questions} 條題目..."):
                         
-                        # Prompt Engineering: 強制垂直排列與有序生成
+                        # 定義一個特殊的分割符號，讓 AI 把題目和答案切開
+                        separator = "<<<SPLIT_HERE>>>"
+
+                        # Prompt Engineering
                         gen_prompt = f"""
                         角色：香港考評局 DSE {subject} 出卷員。
                         任務：根據提供的筆記內容，設計 **{num_questions} 條** {diff} 程度的 {q_type}。
                         
                         【極重要格式要求】：
-                        1. **題目與答案分離**：請先列出所有題目 (Question Paper)，最後才列出答案 (Marking Scheme)。
-                        2. **MC 格式**：
-                           - 選項 (A, B, C, D) 必須 **垂直分行排列**。
-                           - 不要將選項擠在同一行。
-                           - 格式範例：
-                             1. 題目...
-                                A. 選項一
-                                B. 選項二
-                                C. 選項三
-                                D. 選項四
+                        1. **題目與答案分離**：
+                           請先列出「試題卷 (Question Paper)」，完全不要包含答案。
+                           然後插入分隔符號：`{separator}`
+                           最後列出「參考答案 (Marking Scheme)」。
+
+                        2. **MC 格式 (強制垂直分行)**：
+                           每個選項必須獨立一行，使用 Markdown 列表格式。
+                           範例：
+                           1. 題目內容...
+                              - A. 選項一
+                              - B. 選項二
+                              - C. 選項三
+                              - D. 選項四
                         
                         3. **LQ 格式**：請標註分數 (e.g., [4 marks])。
                         
@@ -229,15 +231,31 @@ with tab_study:
                                 model="deepseek-chat",
                                 messages=[{"role": "user", "content": gen_prompt}]
                             )
-                            result_text = response.choices[0].message.content
+                            full_text = response.choices[0].message.content
+                            
+                            # 處理分割邏輯
+                            if separator in full_text:
+                                parts = full_text.split(separator)
+                                questions_part = parts[0].strip()
+                                answers_part = parts[1].strip()
+                            else:
+                                # 如果 AI 忘記加分隔符號，就直接顯示全部
+                                questions_part = full_text
+                                answers_part = "AI 未能自動分離答案，請參閱上方內容。"
                             
                             st.success("✅ 出卷完成！")
                             
-                            # 顯示結果
-                            st.markdown("### 📝 模擬試題")
-                            st.markdown(result_text)
+                            # 1. 顯示題目 (沒有答案)
+                            st.markdown("### 📝 試題卷")
+                            st.markdown(questions_part)
                             
-                            st.info("💡 提示：答案通常位於試題的下方 (Marking Scheme 部分)")
+                            st.markdown("---")
+                            
+                            # 2. 顯示隱藏的答案按鈕 (Expander)
+                            st.info("👇 完成作答後，點擊下方查看答案")
+                            with st.expander("🔐 點擊查看 Marking Scheme (參考答案)"):
+                                st.markdown("### ✅ 參考答案與詳解")
+                                st.markdown(answers_part)
 
                         except Exception as e:
                             st.error(f"生成失敗: {e}")
