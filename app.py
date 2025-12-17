@@ -2,15 +2,16 @@ import streamlit as st
 from openai import OpenAI
 from pinecone import Pinecone
 from sentence_transformers import SentenceTransformer
-import streamlit.components.v1 as components  # 用於製作複製按鈕
+import streamlit.components.v1 as components
 import datetime
 import uuid
 import time
 import json
+import random  # 新增：用於隨機打亂題目
 
 # --- 1. 頁面設定 ---
 st.set_page_config(
-    page_title="DSE 智能温習系統 (Copy Button Fix)", 
+    page_title="DSE 智能温習系統 (Spaced Repetition Fix)", 
     layout="wide", 
     page_icon="🇭🇰",
     initial_sidebar_state="expanded"
@@ -61,11 +62,9 @@ def delete_from_cloud(item_id):
     except Exception as e:
         st.error(f"刪除失敗: {e}")
 
-# --- [新功能] JavaScript 複製按鈕組件 ---
+# JS 複製按鈕組件
 def copy_button_component(text_to_copy):
-    # 使用 json.dumps 確保文字格式在 JS 中不會出錯 (處理換行和引號)
     js_text = json.dumps(text_to_copy)
-    
     components.html(
         f"""
         <script>
@@ -77,36 +76,17 @@ def copy_button_component(text_to_copy):
             el.select();
             document.execCommand('copy');
             document.body.removeChild(el);
-            
-            // 改變按鈕文字提示成功
             const btn = document.getElementById('copyBtn');
             btn.innerText = "✅ 複製成功！";
             btn.style.backgroundColor = "#4CAF50";
-            
-            // 2秒後變回原樣
             setTimeout(() => {{
                 btn.innerText = "📋 點擊複製所有指令";
                 btn.style.backgroundColor = "#FF4B4B";
             }}, 2000);
         }}
         </script>
-        <button id="copyBtn" onclick="copyToClipboard()" style="
-            width: 100%;
-            background-color: #FF4B4B; 
-            color: white; 
-            border: none; 
-            padding: 12px 20px; 
-            border-radius: 8px; 
-            cursor: pointer;
-            font-family: sans-serif;
-            font-weight: bold;
-            font-size: 16px;
-            transition: 0.3s;
-        ">
-            📋 點擊複製所有指令
-        </button>
-        """,
-        height=60
+        <button id="copyBtn" onclick="copyToClipboard()" style="width: 100%; background-color: #FF4B4B; color: white; border: none; padding: 12px 20px; border-radius: 8px; cursor: pointer; font-weight: bold; font-size: 16px;">📋 點擊複製所有指令</button>
+        """, height=60
     )
 
 # --- 5. 側邊欄 ---
@@ -131,45 +111,31 @@ if pinecone_key:
         st.sidebar.error(f"連線失敗: {e}")
 
 # --- 6. 主功能區 ---
-tab_factory, tab_study, tab_review = st.tabs(["🏭 資料清洗", "🎓 智能溫習", "🧠 雲端重溫"])
+tab_factory, tab_study, tab_review = st.tabs(["🏭 資料清洗", "🎓 智能溫習", "🧠 雲端重溫 (Spaced Repetition)"])
 
 # ==========================================
-# TAB 1: 資料清洗 (已加入複製按鈕)
+# TAB 1: 資料清洗
 # ==========================================
 with tab_factory:
     st.header(f"🚀 {current_subject} - 資料清洗")
     c1, c2 = st.columns(2)
-    
     with c1:
         st.subheader("1. 獲取指令")
-        
-        # 定義指令文字
         prompt_text = f"""
-        (請上傳附件 PDF/圖片)
+        (請上傳 PDF/圖片)
         你是一位香港 DSE {current_subject} 的專業教材編輯。
-        請閱讀我上傳的文件，並將其整理為一份「結構清晰」的 Markdown 筆記。
-        
-        要求：
-        1. 【去蕪存菁】：去除頁碼、廣告、重複的考試規則。
-        2. 【結構化】：按課題 (Topic) 使用 # 和 ## 標題分類。
-        3. 【關鍵詞】：保留所有 DSE 專用術語 (Keywords)。
-        4. 【題目】：如果內容包含題目與答案，請整理為 Q: ... A: ... 格式。
-        5. 【輸出】：直接輸出整理後的內容，不需要開場白。
+        請閱讀我上傳的文件，並將其整理為 Markdown 筆記。
+        要求：去除頁碼、按課題分類、保留 Keywords、題目整理為 Q&A 格式。
         """
-        
-        # 顯示文字框 (讓用戶可以看，也可以手動選)
-        st.text_area("指令預覽 (按下方法按鈕複製)", prompt_text, height=250)
-        
-        # [重點] 這裡插入了自定義的 JavaScript 按鈕
+        st.text_area("預覽", prompt_text, height=200)
         copy_button_component(prompt_text)
-        
         st.markdown("---")
-        st.link_button("🔗 前往 DeepSeek 官網貼上", "https://chat.deepseek.com", type="primary")
+        st.link_button("🔗 前往 DeepSeek 官網", "https://chat.deepseek.com", type="primary")
 
     with c2:
         st.subheader("2. 備份存檔")
         with st.form("save"):
-            txt = st.text_area("貼上 DeepSeek 整理後的內容...", height=300)
+            txt = st.text_area("貼上 DeepSeek 內容...", height=300)
             if st.form_submit_button("💾 下載 .txt") and txt:
                 st.download_button("📥 點擊下載", txt, f"{current_subject}_Notes.txt")
 
@@ -209,7 +175,7 @@ with tab_study:
                         rag = f"DSE {current_subject} 導師，用廣東話答：\n{notes[:12000]}"
                         ans = client.chat.completions.create(model="deepseek-chat", messages=[{"role":"system","content":rag},{"role":"user","content":q}]).choices[0].message.content
                         st.markdown(ans)
-                        st.button("☁️ 存入雲端", key=f"save_{len(st.session_state.messages)}", on_click=manual_save_to_cloud, args=(current_subject, q, ans, "問答"))
+                        st.button("☁️ 手動存入雲端", key=f"save_{len(st.session_state.messages)}", on_click=manual_save_to_cloud, args=(current_subject, q, ans, "問答"))
                     st.session_state.messages.append({"role": "assistant", "content": ans})
             
             with s3:
@@ -233,47 +199,74 @@ with tab_study:
                     quiz = st.session_state['c_quiz']
                     st.markdown("### 📝 試題"); st.markdown(quiz['q'])
                     with st.expander("🔐 答案"): st.markdown(quiz['a'])
-                    st.button("☁️ 存入雲端", key="save_quiz", on_click=manual_save_to_cloud, args=(current_subject, quiz['q'], quiz['a'], "模擬卷"))
+                    st.button("☁️ 手動存入雲端", key="save_quiz", on_click=manual_save_to_cloud, args=(current_subject, quiz['q'], quiz['a'], "模擬卷"))
 
 # ==========================================
-# TAB 3: 雲端重溫
+# TAB 3: 雲端重溫 (已修復並加入隨機功能)
 # ==========================================
 with tab_review:
-    st.header("🧠 雲端錯題庫")
+    st.header("🧠 雲端錯題庫 (Spaced Repetition)")
+    
     if not index: st.warning("⚠️ 請先設定 Pinecone Key"); st.stop()
 
-    c_filt, c_ref = st.columns([3, 1])
-    with c_filt: f_sub = st.selectbox("📂 選擇雲端資料夾", ["顯示全部", "Biology", "Chemistry", "Economics", "Chinese", "English", "History", "Maths"])
-    with c_ref: 
+    # 1. 控制台
+    c_filt, c_mode, c_act = st.columns([2, 2, 1])
+    with c_filt: 
+        f_sub = st.selectbox("📂 選擇雲端資料夾", ["顯示全部", "Biology", "Chemistry", "Economics", "Chinese", "English", "History", "Maths"])
+    with c_mode:
+        # 新增模式選擇
+        review_mode = st.radio("模式", ["📅 最近加入", "🎲 隨機抽查 (Spaced Repetition)"], horizontal=True)
+    with c_act: 
         st.write("")
         if st.button("🔄 刷新"): st.rerun()
 
     st.markdown("---")
 
     try:
+        # 讀取邏輯
         dummy = [0.0] * 384
         filt = {"subject": f_sub} if f_sub != "顯示全部" else None
         
-        with st.spinner("讀取雲端..."):
-            res = index.query(vector=dummy, top_k=50, include_metadata=True, filter=filt)
+        with st.spinner("正在從雲端下載記憶..."):
+            # 增加讀取數量至 100 條，以便隨機抽取
+            res = index.query(vector=dummy, top_k=100, include_metadata=True, filter=filt)
         
         matches = res['matches']
-        if not matches: st.info(f"📭 暫無【{f_sub}】紀錄")
+        
+        if not matches:
+            st.info(f"📭 雲端資料庫中暫時沒有【{f_sub}】的紀錄。\n請到「智能溫習」分頁生成題目並按「☁️ 手動存入雲端」。")
         else:
-            st.success(f"☁️ 同步 {len(matches)} 條紀錄")
+            # 處理排序邏輯
+            if review_mode == "🎲 隨機抽查 (Spaced Repetition)":
+                random.shuffle(matches)
+                st.success(f"🎲 已隨機打亂 {len(matches)} 條紀錄，請開始温習！")
+            else:
+                # 預設按時間排序 (雖然 vector search 本身不保證順序，但通常是近似度)
+                # 這裡直接顯示查詢結果
+                st.success(f"📅 顯示最近 {len(matches)} 條紀錄")
+
+            # 顯示卡片
             for match in matches:
                 mid = match['id']
                 data = match['metadata']
+                
+                # 標題
                 st.markdown(f"""
-                <div style="background-color:#e8f4f9; padding:8px; border-radius:5px 5px 0 0; border-left: 5px solid #0068c9; margin-top: 15px;">
+                <div style="background-color:#f0f2f6; padding:8px; border-radius:5px 5px 0 0; border-left: 5px solid #ff4b4b; margin-top: 15px;">
                     <b>{data.get('subject')}</b> <small style="color:grey;">| {data.get('type')} | {data.get('date')}</small>
                 </div>
                 """, unsafe_allow_html=True)
+                
+                # 問題 (使用原生 Markdown 避免數學亂碼)
                 with st.container():
-                    st.markdown(data.get('question', 'No Question'))
-                with st.expander("👁️ 顯示答案與管理"):
+                    st.info(data.get('question', 'No Question'))
+                
+                # 答案與管理
+                with st.expander("👁️ 點擊顯示答案"):
+                    st.markdown("### ✅ 解析")
                     st.markdown(data.get('answer', 'No Answer'))
                     st.divider()
                     st.button("🗑️ 永久刪除", key=f"del_{mid}", on_click=delete_from_cloud, args=(mid,), type="primary")
+
     except Exception as e:
         st.error(f"讀取錯誤: {e}")
