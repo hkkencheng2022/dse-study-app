@@ -8,11 +8,11 @@ import uuid
 import time
 import json
 import random
-import re  # 新增：用於修復數學符號的正則表達式
+import re
 
 # --- 1. 頁面設定 ---
 st.set_page_config(
-    page_title="DSE 智能温習系統 (Math Fixed)", 
+    page_title="DSE 智能温習系統 (Flashcard Fixed)", 
     layout="wide", 
     page_icon="🇭🇰",
     initial_sidebar_state="expanded"
@@ -36,16 +36,10 @@ pinecone_key = st.secrets.get("PINECONE_API_KEY")
 
 # --- 4. 核心函數 ---
 
-# [新增] 自動修復 LaTeX 格式函數
 def clean_latex(text):
     if not text: return ""
-    # 1. 將 \[ ... \] 替換為 $$ ... $$ (獨立一行公式)
     text = re.sub(r'\\\[(.*?)\\\]', r'$$\1$$', text, flags=re.DOTALL)
-    # 2. 將 \( ... \) 替換為 $ ... $ (行內公式)
     text = re.sub(r'\\\((.*?)\\\)', r'$\1$', text, flags=re.DOTALL)
-    # 3. 修復常見的孤立括號問題 (針對你的具體報錯)
-    # 如果發現 f(x) = ... 這種數學式沒被包住，嘗試自動包裹 (這比較激進，視情況調整)
-    # 這裡主要依賴上面的替換。
     return text
 
 def manual_save_to_cloud(subject, question, answer, note_type):
@@ -53,7 +47,6 @@ def manual_save_to_cloud(subject, question, answer, note_type):
         st.error("❌ 未連接 Pinecone")
         return
     
-    # 儲存前先清洗一下格式，確保資料庫裡的是乾淨的
     question = clean_latex(question)
     answer = clean_latex(answer)
     
@@ -74,30 +67,36 @@ def manual_save_to_cloud(subject, question, answer, note_type):
     try:
         index.upsert(vectors=[(unique_id, vector, metadata)])
         st.toast(f"☁️ 已存入【{subject}】！", icon="✅")
+        # 存入後清除緩存，讓新題目有機會被讀取
+        if 'card_pool' in st.session_state: del st.session_state['card_pool']
     except Exception as e:
         st.error(f"上傳失敗: {e}")
 
+# [關鍵修正] 更新權重後，必須清除 current_card
 def update_weight(item_id, rating):
     if not index: return
     new_weight = 20.0
     msg = ""
     if rating == 1:
         new_weight = 20.0
-        msg = "標記為【完全不熟悉】，將頻繁出現！"
+        msg = "🔴 標記為【完全不熟悉】(下題機率高)"
     elif rating == 2:
         new_weight = 5.0
-        msg = "標記為【不太熟悉】，間中出現。"
+        msg = "🟡 標記為【不太熟悉】(下題機率中)"
     elif rating == 3:
         new_weight = 1.0
-        msg = "標記為【初步熟悉】，減少出現。"
+        msg = "🟢 標記為【初步熟悉】(下題機率低)"
     
     try:
         index.update(id=item_id, set_metadata={"weight": new_weight})
         st.toast(msg, icon="📊")
-        if 'current_card_index' in st.session_state:
-            del st.session_state['current_card_index']
-        time.sleep(0.5)
-        st.rerun()
+        
+        # [Fix] 強制清除當前卡片，觸發重新抽卡
+        if 'current_card_data' in st.session_state:
+            del st.session_state['current_card_data']
+            
+        time.sleep(0.3)
+        # 不使用 rerun，依靠 Session State 的清除，Streamlit 重新渲染時會自動進到抽卡邏輯
     except Exception as e:
         st.error(f"更新失敗: {e}")
 
@@ -106,12 +105,19 @@ def delete_from_cloud(item_id):
     try:
         index.delete(ids=[item_id])
         st.toast("🗑️ 已刪除！", icon="✅")
-        if 'current_card_index' in st.session_state:
-            del st.session_state['current_card_index']
-        time.sleep(1)
+        if 'current_card_data' in st.session_state:
+            del st.session_state['current_card_data']
+        if 'card_pool' in st.session_state:
+            del st.session_state['card_pool']
+        time.sleep(0.5)
         st.rerun()
     except Exception as e:
         st.error(f"刪除失敗: {e}")
+
+# 跳過按鈕的回調函數
+def skip_card():
+    if 'current_card_data' in st.session_state:
+        del st.session_state['current_card_data']
 
 def copy_button_component(text_to_copy):
     js_text = json.dumps(text_to_copy)
@@ -158,7 +164,7 @@ if pinecone_key:
         st.sidebar.error(f"連線失敗: {e}")
 
 # --- 6. 主功能區 ---
-tab_factory, tab_study, tab_review = st.tabs(["🏭 資料清洗", "🎓 智能溫習", "🧠 權重抽卡 (Review)"])
+tab_factory, tab_study, tab_review = st.tabs(["🏭 資料清洗", "🎓 智能溫習", "🧠 權重抽卡 (Flashcard)"])
 
 # ==========================================
 # TAB 1: 資料清洗
@@ -207,17 +213,15 @@ with tab_study:
             with s2:
                 if "messages" not in st.session_state: st.session_state.messages = []
                 for m in st.session_state.messages: 
-                    # 顯示前先清洗
                     st.chat_message(m["role"]).write(clean_latex(m["content"]))
                 
                 if q := st.chat_input("輸入問題..."):
                     st.session_state.messages.append({"role": "user", "content": q})
                     st.chat_message("user").write(q)
                     with st.chat_message("assistant"):
-                        rag = f"DSE 導師，用廣東話答。數學公式請用單個 $ 包住 (例如 $x^2$)，不要用 \( \)。\n筆記：{notes[:12000]}"
+                        rag = f"DSE 導師，用廣東話答。數學公式請用單個 $ 包住。\n筆記：{notes[:12000]}"
                         ans = client.chat.completions.create(model="deepseek-chat", messages=[{"role":"system","content":rag},{"role":"user","content":q}]).choices[0].message.content
                         
-                        # 顯示清洗後的內容
                         display_ans = clean_latex(ans)
                         st.markdown(display_ans)
                         st.button("☁️ 加入題庫", key=f"s_{len(st.session_state.messages)}", on_click=manual_save_to_cloud, args=(current_subject, q, ans, "問答"))
@@ -229,8 +233,7 @@ with tab_study:
                 with c2: qt = st.radio("題型", ["MC","LQ"], horizontal=True)
                 with c3: num = st.number_input("數量", 1, 10, 1)
                 if st.button("🚀 出題"):
-                    # Prompt 中再次強調數學格式
-                    prompt = f"DSE 出卷員。出 {num} 條 {diff} {qt}。1.先列題目，插入 `<<<SPLIT>>>`，再列答案。2.MC垂直分行。3.數學公式必須用單個 $ 包住 (例如 $x^2$)，嚴禁使用 \( ... \)。筆記：{notes[:6000]}"
+                    prompt = f"DSE 出卷員。出 {num} 條 {diff} {qt}。1.先列題目，插入 `<<<SPLIT>>>`，再列答案。2.MC垂直分行。3.數學公式必須用單個 $ 包住。筆記：{notes[:6000]}"
                     res = client.chat.completions.create(model="deepseek-chat", messages=[{"role":"user","content":prompt}]).choices[0].message.content
                     q_p, a_p = res.split("<<<SPLIT>>>") if "<<<SPLIT>>>" in res else (res, "見上方")
                     st.session_state['q'] = {"q": q_p, "a": a_p}
@@ -238,87 +241,112 @@ with tab_study:
                 if 'q' in st.session_state:
                     quiz = st.session_state['q']
                     st.markdown("### 試題")
-                    st.markdown(clean_latex(quiz['q'])) # 顯示前清洗
+                    st.markdown(clean_latex(quiz['q']))
                     with st.expander("答案"): 
-                        st.markdown(clean_latex(quiz['a'])) # 顯示前清洗
+                        st.markdown(clean_latex(quiz['a']))
                     st.button("☁️ 加入題庫", key="sq", on_click=manual_save_to_cloud, args=(current_subject, quiz['q'], quiz['a'], "模擬卷"))
 
 # ==========================================
-# TAB 3: 權重機率抽卡
+# TAB 3: 權重機率抽卡 (修復版)
 # ==========================================
 with tab_review:
     st.header("🧠 權重抽卡温習 (Flashcard)")
-    st.caption("系統會自動修復數學符號顯示。")
     
     if not index: st.warning("⚠️ 請先設定 Pinecone Key"); st.stop()
 
+    # 控制台
     c_filt, c_reset = st.columns([3, 1])
-    with c_filt: f_sub = st.selectbox("📂 選擇學科抽題", ["顯示全部", "Biology", "Chemistry", "Economics", "Chinese", "English", "History", "Maths"])
+    with c_filt: 
+        f_sub = st.selectbox("📂 選擇學科抽題", ["顯示全部", "Biology", "Chemistry", "Economics", "Chinese", "English", "History", "Maths"])
+    
+    # [Fix] 檢測篩選器變更，強制清空緩存
+    if 'last_filter' not in st.session_state:
+        st.session_state.last_filter = f_sub
+    
+    if st.session_state.last_filter != f_sub:
+        # 如果切換了科目，清除所有相關緩存
+        if 'card_pool' in st.session_state: del st.session_state['card_pool']
+        if 'current_card_data' in st.session_state: del st.session_state['current_card_data']
+        st.session_state.last_filter = f_sub
+        st.rerun()
+
     with c_reset:
         st.write("")
-        if st.button("⏭️ 跳過 / 刷新"):
-            if 'current_card_index' in st.session_state: del st.session_state['current_card_index']
-            st.rerun()
+        # 跳過按鈕：使用 callback 清除當前卡片
+        st.button("⏭️ 下一張 / 刷新", on_click=skip_card)
 
     st.markdown("---")
 
     try:
-        dummy = [0.0] * 384
-        meta_filter = {"subject": f_sub} if f_sub != "顯示全部" else None
-        
+        # 1. 獲取題庫池 (如果緩存沒有，就去雲端抓)
         if 'card_pool' not in st.session_state:
-            with st.spinner("準備題庫..."):
-                res = index.query(vector=dummy, top_k=200, include_metadata=True, filter=meta_filter)
+            dummy = [0.0] * 384
+            meta_filter = {"subject": f_sub} if f_sub != "顯示全部" else None
+            
+            with st.spinner("正在從雲端載入題庫..."):
+                # 抓取 100 題 (你可以增加這個數字)
+                res = index.query(vector=dummy, top_k=100, include_metadata=True, filter=meta_filter)
                 st.session_state['card_pool'] = res['matches']
         
         pool = st.session_state['card_pool']
-        if not pool:
-            st.info(f"📭 暫無【{f_sub}】紀錄。")
-        else:
-            if 'current_card_index' not in st.session_state:
-                weights = [float(m['metadata'].get('weight', 20.0)) for m in pool]
-                st.session_state['current_card_index'] = random.choices(pool, weights=weights, k=1)[0]
 
-            card = st.session_state['current_card_index']
+        # 2. 檢查是否有題目
+        if not pool:
+            st.info(f"📭 題庫中暫時沒有【{f_sub}】的紀錄。請去 Tab 2 生成題目並存入雲端。")
+        else:
+            # 顯示題庫數量
+            st.caption(f"📚 題庫總數: {len(pool)} 題 | 系統會根據權重自動派題")
+
+            # 3. 抽卡邏輯 (如果當前沒有卡片，就抽一張)
+            if 'current_card_data' not in st.session_state:
+                # 提取權重
+                weights = [float(m['metadata'].get('weight', 20.0)) for m in pool]
+                # 隨機抽取
+                chosen_card = random.choices(pool, weights=weights, k=1)[0]
+                st.session_state['current_card_data'] = chosen_card
+
+            # 4. 顯示當前卡片
+            card = st.session_state['current_card_data']
             data = card['metadata']
             mid = card['id']
             w = float(data.get('weight', 20.0))
             
-            w_label = "🔴 高頻" if w == 20.0 else ("🟡 中頻" if w == 5.0 else "🟢 低頻")
+            # UI 顏色設定
+            w_label = "🔴 高頻複習 (權重: 20)" if w == 20.0 else ("🟡 中頻複習 (權重: 5)" if w == 5.0 else "🟢 低頻複習 (權重: 1)")
             w_color = "#ff4b4b" if w == 20.0 else ("#ffa500" if w == 5.0 else "#28a745")
 
-            # 顯示題目 (應用 clean_latex 修復亂碼)
-            question_text = clean_latex(data.get('question'))
-            answer_text = clean_latex(data.get('answer'))
-
+            # 卡片容器
             st.markdown(f"""
-            <div style="border: 2px solid {w_color}; border-radius: 10px; padding: 20px; margin-bottom: 20px;">
+            <div style="border: 2px solid {w_color}; border-radius: 10px; padding: 20px; margin-bottom: 20px; background-color: white;">
                 <div style="display:flex; justify-content:space-between; margin-bottom:10px;">
                     <span style="font-weight:bold; color:#0068c9;">{data.get('subject')}</span>
                     <span style="background-color:{w_color}; color:white; padding:2px 8px; border-radius:5px; font-size:0.8em;">{w_label}</span>
                 </div>
-                <!-- 這裡使用 st.markdown 渲染修復後的數學公式 -->
             </div>
             """, unsafe_allow_html=True)
             
-            # 使用 container 來顯示 markdown，確保 LaTeX 正常
             with st.container():
-                st.markdown(question_text)
+                # 顯示題目 (已修復數學)
+                st.markdown(clean_latex(data.get('question')))
 
-            with st.expander("👁️ 翻開答案", expanded=True):
+            # 翻牌與評分
+            with st.expander("👁️ 翻開答案 (Check Answer)", expanded=True):
                 st.markdown("### ✅ 解析")
-                st.markdown(answer_text)
+                st.markdown(clean_latex(data.get('answer')))
                 st.divider()
-                st.markdown("#### 🧠 熟悉度評分")
+                st.markdown("#### 🧠 你對這題熟悉嗎？")
+                
                 c1, c2, c3, c4 = st.columns(4)
+                
+                # 按鈕使用 callback 更新狀態，無需手動 rerun
                 with c1: 
-                    if st.button("🔴 完全不熟", use_container_width=True): update_weight(mid, 1)
+                    st.button("🔴 完全不熟", key="btn_hard", on_click=update_weight, args=(mid, 1), use_container_width=True)
                 with c2: 
-                    if st.button("🟡 不太熟", use_container_width=True): update_weight(mid, 2)
+                    st.button("🟡 不太熟", key="btn_med", on_click=update_weight, args=(mid, 2), use_container_width=True)
                 with c3: 
-                    if st.button("🟢 初步熟悉", use_container_width=True): update_weight(mid, 3)
+                    st.button("🟢 初步熟悉", key="btn_easy", on_click=update_weight, args=(mid, 3), use_container_width=True)
                 with c4: 
-                    if st.button("🗑️ 刪除", use_container_width=True): delete_from_cloud(mid)
+                    st.button("🗑️ 刪除", key="btn_del", on_click=delete_from_cloud, args=(mid,), use_container_width=True)
 
     except Exception as e:
         st.error(f"系統錯誤: {e}")
