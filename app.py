@@ -12,7 +12,7 @@ import re
 
 # --- 1. 頁面設定 ---
 st.set_page_config(
-    page_title="DSE 智能温習系統 (Flashcard Fixed)", 
+    page_title="DSE 智能温習系統 (Weighted All-Subject)", 
     layout="wide", 
     page_icon="🇭🇰",
     initial_sidebar_state="expanded"
@@ -38,6 +38,7 @@ pinecone_key = st.secrets.get("PINECONE_API_KEY")
 
 def clean_latex(text):
     if not text: return ""
+    # 修復 LaTeX 格式，將 \[ \] 和 \( \) 轉換為 Streamlit 支援的格式
     text = re.sub(r'\\\[(.*?)\\\]', r'$$\1$$', text, flags=re.DOTALL)
     text = re.sub(r'\\\((.*?)\\\)', r'$\1$', text, flags=re.DOTALL)
     return text
@@ -47,6 +48,7 @@ def manual_save_to_cloud(subject, question, answer, note_type):
         st.error("❌ 未連接 Pinecone")
         return
     
+    # 存入前清洗格式
     question = clean_latex(question)
     answer = clean_latex(answer)
     
@@ -59,7 +61,7 @@ def manual_save_to_cloud(subject, question, answer, note_type):
         "answer": answer,
         "type": note_type,
         "date_added": datetime.datetime.now().strftime("%Y-%m-%d"),
-        "weight": 20.0,
+        "weight": 20.0, # 初始權重設為高
         "timestamp": time.time()
     }
     
@@ -67,36 +69,33 @@ def manual_save_to_cloud(subject, question, answer, note_type):
     try:
         index.upsert(vectors=[(unique_id, vector, metadata)])
         st.toast(f"☁️ 已存入【{subject}】！", icon="✅")
-        # 存入後清除緩存，讓新題目有機會被讀取
+        # 清除緩存，確保新題目能被讀取
         if 'card_pool' in st.session_state: del st.session_state['card_pool']
     except Exception as e:
         st.error(f"上傳失敗: {e}")
 
-# [關鍵修正] 更新權重後，必須清除 current_card
 def update_weight(item_id, rating):
     if not index: return
     new_weight = 20.0
     msg = ""
     if rating == 1:
         new_weight = 20.0
-        msg = "🔴 標記為【完全不熟悉】(下題機率高)"
+        msg = "🔴 標記為【完全不熟悉】(下題機率極高)"
     elif rating == 2:
         new_weight = 5.0
-        msg = "🟡 標記為【不太熟悉】(下題機率中)"
+        msg = "🟡 標記為【不太熟悉】(下題機率中等)"
     elif rating == 3:
         new_weight = 1.0
-        msg = "🟢 標記為【初步熟悉】(下題機率低)"
+        msg = "🟢 標記為【初步熟悉】(下題機率較低)"
     
     try:
         index.update(id=item_id, set_metadata={"weight": new_weight})
         st.toast(msg, icon="📊")
-        
-        # [Fix] 強制清除當前卡片，觸發重新抽卡
+        # 清除當前卡片，強制換卡
         if 'current_card_data' in st.session_state:
             del st.session_state['current_card_data']
-            
+        # 稍微延遲讓用戶看到提示
         time.sleep(0.3)
-        # 不使用 rerun，依靠 Session State 的清除，Streamlit 重新渲染時會自動進到抽卡邏輯
     except Exception as e:
         st.error(f"更新失敗: {e}")
 
@@ -114,7 +113,7 @@ def delete_from_cloud(item_id):
     except Exception as e:
         st.error(f"刪除失敗: {e}")
 
-# 跳過按鈕的回調函數
+# 跳過按鈕的回調
 def skip_card():
     if 'current_card_data' in st.session_state:
         del st.session_state['current_card_data']
@@ -221,7 +220,6 @@ with tab_study:
                     with st.chat_message("assistant"):
                         rag = f"DSE 導師，用廣東話答。數學公式請用單個 $ 包住。\n筆記：{notes[:12000]}"
                         ans = client.chat.completions.create(model="deepseek-chat", messages=[{"role":"system","content":rag},{"role":"user","content":q}]).choices[0].message.content
-                        
                         display_ans = clean_latex(ans)
                         st.markdown(display_ans)
                         st.button("☁️ 加入題庫", key=f"s_{len(st.session_state.messages)}", on_click=manual_save_to_cloud, args=(current_subject, q, ans, "問答"))
@@ -247,7 +245,7 @@ with tab_study:
                     st.button("☁️ 加入題庫", key="sq", on_click=manual_save_to_cloud, args=(current_subject, quiz['q'], quiz['a'], "模擬卷"))
 
 # ==========================================
-# TAB 3: 權重機率抽卡 (修復版)
+# TAB 3: 權重機率抽卡 (Cross-Subject Fix)
 # ==========================================
 with tab_review:
     st.header("🧠 權重抽卡温習 (Flashcard)")
@@ -259,12 +257,11 @@ with tab_review:
     with c_filt: 
         f_sub = st.selectbox("📂 選擇學科抽題", ["顯示全部", "Biology", "Chemistry", "Economics", "Chinese", "English", "History", "Maths"])
     
-    # [Fix] 檢測篩選器變更，強制清空緩存
+    # 篩選變更偵測
     if 'last_filter' not in st.session_state:
         st.session_state.last_filter = f_sub
     
     if st.session_state.last_filter != f_sub:
-        # 如果切換了科目，清除所有相關緩存
         if 'card_pool' in st.session_state: del st.session_state['card_pool']
         if 'current_card_data' in st.session_state: del st.session_state['current_card_data']
         st.session_state.last_filter = f_sub
@@ -272,73 +269,77 @@ with tab_review:
 
     with c_reset:
         st.write("")
-        # 跳過按鈕：使用 callback 清除當前卡片
         st.button("⏭️ 下一張 / 刷新", on_click=skip_card)
 
     st.markdown("---")
 
     try:
-        # 1. 獲取題庫池 (如果緩存沒有，就去雲端抓)
+        # 1. 獲取題庫池
         if 'card_pool' not in st.session_state:
             dummy = [0.0] * 384
+            # 如果選顯示全部，filter 設為 None，抓取更多題目 (500) 以確保隨機性
             meta_filter = {"subject": f_sub} if f_sub != "顯示全部" else None
+            top_k_count = 500 if f_sub == "顯示全部" else 200
             
-            with st.spinner("正在從雲端載入題庫..."):
-                # 抓取 100 題 (你可以增加這個數字)
-                res = index.query(vector=dummy, top_k=100, include_metadata=True, filter=meta_filter)
+            with st.spinner(f"正在從雲端載入{f_sub}題庫..."):
+                res = index.query(vector=dummy, top_k=top_k_count, include_metadata=True, filter=meta_filter)
                 st.session_state['card_pool'] = res['matches']
         
         pool = st.session_state['card_pool']
 
-        # 2. 檢查是否有題目
+        # 2. 檢查題庫
         if not pool:
-            st.info(f"📭 題庫中暫時沒有【{f_sub}】的紀錄。請去 Tab 2 生成題目並存入雲端。")
+            st.info(f"📭 題庫中暫時沒有【{f_sub}】的紀錄。")
         else:
-            # 顯示題庫數量
-            st.caption(f"📚 題庫總數: {len(pool)} 題 | 系統會根據權重自動派題")
+            # 顯示統計
+            sub_count = {}
+            for p in pool:
+                s = p['metadata'].get('subject', 'Unknown')
+                sub_count[s] = sub_count.get(s, 0) + 1
+            
+            caption_text = f"📚 題庫總數: {len(pool)} 題"
+            if f_sub == "顯示全部":
+                caption_text += f" (包含: {', '.join([f'{k}:{v}' for k,v in sub_count.items()])})"
+            st.caption(caption_text)
 
-            # 3. 抽卡邏輯 (如果當前沒有卡片，就抽一張)
+            # 3. 抽卡邏輯 (核心)
             if 'current_card_data' not in st.session_state:
                 # 提取權重
                 weights = [float(m['metadata'].get('weight', 20.0)) for m in pool]
-                # 隨機抽取
+                # 隨機抽取 (這裡會根據所有題目的權重進行跨學科抽取)
                 chosen_card = random.choices(pool, weights=weights, k=1)[0]
                 st.session_state['current_card_data'] = chosen_card
 
-            # 4. 顯示當前卡片
+            # 4. 顯示卡片
             card = st.session_state['current_card_data']
             data = card['metadata']
             mid = card['id']
             w = float(data.get('weight', 20.0))
             
-            # UI 顏色設定
-            w_label = "🔴 高頻複習 (權重: 20)" if w == 20.0 else ("🟡 中頻複習 (權重: 5)" if w == 5.0 else "🟢 低頻複習 (權重: 1)")
+            w_label = "🔴 高頻複習" if w == 20.0 else ("🟡 中頻複習" if w == 5.0 else "🟢 低頻複習")
             w_color = "#ff4b4b" if w == 20.0 else ("#ffa500" if w == 5.0 else "#28a745")
 
-            # 卡片容器
             st.markdown(f"""
             <div style="border: 2px solid {w_color}; border-radius: 10px; padding: 20px; margin-bottom: 20px; background-color: white;">
                 <div style="display:flex; justify-content:space-between; margin-bottom:10px;">
-                    <span style="font-weight:bold; color:#0068c9;">{data.get('subject')}</span>
+                    <span style="font-weight:bold; color:#0068c9; font-size:1.1em;">{data.get('subject')}</span>
                     <span style="background-color:{w_color}; color:white; padding:2px 8px; border-radius:5px; font-size:0.8em;">{w_label}</span>
                 </div>
             </div>
             """, unsafe_allow_html=True)
             
             with st.container():
-                # 顯示題目 (已修復數學)
                 st.markdown(clean_latex(data.get('question')))
 
-            # 翻牌與評分
             with st.expander("👁️ 翻開答案 (Check Answer)", expanded=True):
                 st.markdown("### ✅ 解析")
                 st.markdown(clean_latex(data.get('answer')))
                 st.divider()
-                st.markdown("#### 🧠 你對這題熟悉嗎？")
+                st.markdown("#### 🧠 熟悉度評分 (Auto Next)")
                 
                 c1, c2, c3, c4 = st.columns(4)
                 
-                # 按鈕使用 callback 更新狀態，無需手動 rerun
+                # 按鈕 callback 會自動清除 current_card_data，觸發下次 render 時重新抽卡
                 with c1: 
                     st.button("🔴 完全不熟", key="btn_hard", on_click=update_weight, args=(mid, 1), use_container_width=True)
                 with c2: 
