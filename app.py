@@ -149,6 +149,4 @@ with tab_study:
                             model="deepseek-chat",
                             messages=[{"role": "user", "content": f"根據筆記出 DSE 題目：{notes_text[:5000]}"}]
                         )
-                        st.markdown(res.choices[0].message.content)        return f"讀取檔案錯誤 ({file_type}): {str(e)}"
-        
-    return text
+                        st.markdown(res.choices[0].message.content)
