@@ -1,11 +1,5 @@
 streamlit
 openai
-pdfplumber
-python-docx
-python-pptx
-pandas
-openpyxl
-Pillow
-pytesseract
-SpeechRecognition
-pydub
+pinecone-client
+sentence-transformers
+torch
