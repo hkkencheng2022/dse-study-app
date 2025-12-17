@@ -1,3 +1,11 @@
 streamlit
 openai
 PyPDF2
+python-docx
+python-pptx
+pandas
+openpyxl
+Pillow
+pytesseract
+SpeechRecognition
+pydub
