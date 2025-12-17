@@ -12,7 +12,7 @@ import re
 
 # --- 1. 頁面設定 ---
 st.set_page_config(
-    page_title="DSE 智能温習系統 (Instant Next)", 
+    page_title="DSE 智能温習系統 (Force Switch Fix)", 
     layout="wide", 
     page_icon="🇭🇰",
     initial_sidebar_state="expanded"
@@ -59,55 +59,58 @@ def manual_save_to_cloud(subject, question, answer, note_type):
     try:
         index.upsert(vectors=[(unique_id, vector, metadata)])
         st.toast(f"☁️ 已存入【{subject}】！", icon="✅")
-        # 清除題庫緩存，確保新題能被讀到
         if 'card_pool' in st.session_state: del st.session_state['card_pool']
     except Exception as e:
         st.error(f"上傳失敗: {e}")
 
-# [極速版] 更新權重後，立即清除狀態，不等待
+# [SRS 邏輯] 更新權重
 def update_weight(item_id, rating):
     if not index: return
     new_weight = 20.0
     msg = ""
     if rating == 1:
         new_weight = 20.0
-        msg = "🔴 已標記：高頻複習"
+        msg = "🔴 高頻複習"
     elif rating == 2:
         new_weight = 5.0
-        msg = "🟡 已標記：中頻複習"
+        msg = "🟡 中頻複習"
     elif rating == 3:
         new_weight = 1.0
-        msg = "🟢 已標記：低頻複習"
+        msg = "🟢 低頻複習"
     
     try:
-        # 非同步更新雲端 (Streamlit 不會等它完成，直接換下一張卡)
+        # 非同步更新
         index.update(id=item_id, set_metadata={"weight": new_weight})
-        st.toast(msg, icon="⚡") # 顯示一個快速提示
+        st.toast(msg, icon="⚡")
         
-        # 立即清除當前卡片，強制換卡
+        # [關鍵] 記錄這張卡的 ID，防止下一張重複
+        st.session_state['previous_card_id'] = item_id
+        
+        # 清除當前卡片，強制換卡
         if 'current_card_data' in st.session_state:
             del st.session_state['current_card_data']
             
     except Exception as e:
         st.error(f"更新失敗: {e}")
 
-# [極速版] 刪除後立即換卡
 def delete_from_cloud(item_id):
     if not index: return
     try:
         index.delete(ids=[item_id])
         st.toast("🗑️ 已刪除", icon="✅")
+        # 刪除就不需要記錄 ID 了，因為它已經消失，不會再抽到
         if 'current_card_data' in st.session_state:
             del st.session_state['current_card_data']
         if 'card_pool' in st.session_state:
-            del st.session_state['card_pool'] # 題庫變了，清除緩存
+            del st.session_state['card_pool'] 
     except Exception as e:
         st.error(f"刪除失敗: {e}")
 
-# [極速版] 跳過按鈕的回調
+# [跳過按鈕]
 def skip_card():
-    # 直接清除當前卡片，Streamlit 下一次渲染時會自動抽新的
+    # 記錄當前 ID，防止下一張一樣
     if 'current_card_data' in st.session_state:
+        st.session_state['previous_card_id'] = st.session_state['current_card_data']['id']
         del st.session_state['current_card_data']
 
 def copy_button_component(text_to_copy):
@@ -136,7 +139,7 @@ def copy_button_component(text_to_copy):
 # --- 5. 側邊欄 ---
 with st.sidebar:
     st.title("🇭🇰 DSE 備戰中心")
-    st.caption("Instant Review Mode")
+    st.caption("No-Repeat Flashcards")
     st.divider()
     if not deepseek_key: deepseek_key = st.text_input("DeepSeek Key", type="password")
     if not pinecone_key: pinecone_key = st.text_input("Pinecone Key", type="password")
@@ -223,7 +226,7 @@ with tab_study:
                 with c2: qt = st.radio("題型", ["MC","LQ"], horizontal=True)
                 with c3: num = st.number_input("數量", 1, 10, 1)
                 if st.button("🚀 出題"):
-                    prompt = f"DSE 出卷員。出 {num} 條 {diff} {qt}。1.先列題目，插入 `<<<SPLIT>>>`，再列答案。2.MC垂直分行。3.數學公式用單個 $ 包住。筆記：{notes[:6000]}"
+                    prompt = f"DSE 出卷員。出 {num} 條 {diff} {qt}。1.先列題目，插入 `<<<SPLIT>>>`，再列答案。2.MC垂直分行。3.數學公式必須用單個 $ 包住。筆記：{notes[:6000]}"
                     res = client.chat.completions.create(model="deepseek-chat", messages=[{"role":"user","content":prompt}]).choices[0].message.content
                     q_p, a_p = res.split("<<<SPLIT>>>") if "<<<SPLIT>>>" in res else (res, "見上方")
                     st.session_state['q'] = {"q": q_p, "a": a_p}
@@ -237,7 +240,7 @@ with tab_study:
                     st.button("☁️ 加入題庫", key="sq", on_click=manual_save_to_cloud, args=(current_subject, quiz['q'], quiz['a'], "模擬卷"))
 
 # ==========================================
-# TAB 3: 權重機率抽卡 (Instant Next Fix)
+# TAB 3: 權重機率抽卡 (Anti-Repeat Fix)
 # ==========================================
 with tab_review:
     st.header("🧠 權重抽卡温習 (Flashcard)")
@@ -248,7 +251,6 @@ with tab_review:
     with c_filt: 
         f_sub = st.selectbox("📂 選擇學科抽題", ["顯示全部", "Biology", "Chemistry", "Economics", "Chinese", "English", "History", "Maths"])
     
-    # 篩選變更偵測 -> 清空緩存
     if 'last_filter' not in st.session_state: st.session_state.last_filter = f_sub
     if st.session_state.last_filter != f_sub:
         if 'card_pool' in st.session_state: del st.session_state['card_pool']
@@ -258,7 +260,6 @@ with tab_review:
 
     with c_reset:
         st.write("")
-        # [Fix] 使用 callback 直接觸發換卡，無需 sleep
         st.button("⏭️ 下一張", on_click=skip_card, type="primary", use_container_width=True)
 
     st.markdown("---")
@@ -282,10 +283,21 @@ with tab_review:
         else:
             st.caption(f"📚 題庫總數: {len(pool)} 題")
 
-            # 3. 抽卡 (如果當前無卡，立即抽一張)
+            # 3. 抽卡邏輯 (含防重複機制)
             if 'current_card_data' not in st.session_state:
                 weights = [float(m['metadata'].get('weight', 20.0)) for m in pool]
+                
+                # [關鍵修正]：強制迴圈，直到抽到不重複的卡片 (除非只有一張)
                 chosen_card = random.choices(pool, weights=weights, k=1)[0]
+                
+                if len(pool) > 1 and 'previous_card_id' in st.session_state:
+                    prev_id = st.session_state['previous_card_id']
+                    # 如果抽到一樣的，最多重試 5 次
+                    retry_count = 0
+                    while chosen_card['id'] == prev_id and retry_count < 5:
+                        chosen_card = random.choices(pool, weights=weights, k=1)[0]
+                        retry_count += 1
+                
                 st.session_state['current_card_data'] = chosen_card
 
             # 4. 顯示卡片
@@ -317,7 +329,6 @@ with tab_review:
                 
                 c1, c2, c3, c4 = st.columns(4)
                 
-                # [Fix] 按鈕 on_click 直接呼叫函數，函數內執行完會清除 current_card，達到秒換效果
                 with c1: 
                     st.button("🔴 完全不熟", key="btn_hard", on_click=update_weight, args=(mid, 1), use_container_width=True)
                 with c2: 
