@@ -1,50 +1,64 @@
 import streamlit as st
 from openai import OpenAI
-import io
 
 # --- 1. 頁面設定 ---
-st.set_page_config(page_title="DSE 智能温習系統 (Web版)", layout="wide", page_icon="🇭🇰")
+st.set_page_config(
+    page_title="DSE 智能温習系統 (Web版)", 
+    layout="wide", 
+    page_icon="🇭🇰",
+    initial_sidebar_state="expanded"
+)
 
-# --- 2. API Key 設定 (用於 Tab 2 的問答) ---
+# --- 2. API Key 設定 (優先從 Secrets 讀取) ---
 api_key = None
 if "DEEPSEEK_API_KEY" in st.secrets:
     api_key = st.secrets["DEEPSEEK_API_KEY"]
 else:
-    api_key = st.sidebar.text_input("DeepSeek API Key (用於温習室)", type="password")
+    api_key = st.sidebar.text_input("DeepSeek API Key (用於 Tab 2)", type="password")
 
-# 初始化 Client (只在 Tab 2 使用)
+# 初始化 Client (只在 Tab 2 需要 API)
 client = None
 if api_key:
     client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
 
-# --- 3. 側邊欄 ---
+# --- 3. 側邊欄：導航與設定 ---
 with st.sidebar:
     st.title("🇭🇰 DSE 備戰中心")
     st.caption("官網清洗 -> NotebookLM -> 智能温習")
     st.divider()
-    subject = st.selectbox("當前科目", ["Biology", "Chemistry", "Economics", "Chinese", "English", "History", "Maths"])
-    st.info("💡 提示：此版本利用 DeepSeek 官網強大的讀檔能力，解決掃描檔問題。")
+    
+    # 科目選擇
+    subject = st.selectbox(
+        "當前科目", 
+        ["Biology", "Chemistry", "Economics", "Chinese", "English", "History", "Maths", "Liberal Studies"]
+    )
+    
+    st.info("""
+    **💡 使用流程：**
+    1. **Tab 1:** 獲取指令 -> 去 DeepSeek 官網整理筆記 -> 貼回並下載 TXT。
+    2. **NotebookLM:** 上傳 TXT -> 生成 Audio。
+    3. **Tab 2:** 上傳 TXT + Audio -> 開始溫習。
+    """)
 
-# --- 4. 主功能區 ---
+# --- 4. 主功能區 (Tabs) ---
 tab_factory, tab_study = st.tabs(["🏭 步驟一：官網資料清洗", "🎓 步驟二：智能温習室"])
 
 # ==========================================
-# TAB 1: 官網資料清洗 (The Bridge)
+# TAB 1: 官網資料清洗 (The Bridge) - 已加入按鈕執行
 # ==========================================
 with tab_factory:
     st.header(f"🚀 {subject} - 資料清洗橋樑")
     st.markdown("""
-    由於 PDF 掃描檔或複雜格式難以用程式讀取，我們直接利用 **DeepSeek 官網** 的強大能力來處理。
-    請跟隨以下三步曲：
+    由於掃描版 PDF 或手寫筆記難以用程式直接讀取，我們利用 **DeepSeek 官網** 的強大識別能力來處理。
     """)
     
     col1, col2 = st.columns([1, 1])
     
+    # 左欄：提供指令
     with col1:
         st.subheader("1. 複製指令 (Prompt)")
         st.write("點擊右上角複製按鈕，這段指令會教 DeepSeek 如何整理筆記：")
         
-        # 預設的強力 Prompt
         prompt_text = f"""
         (請上傳附件 PDF/圖片)
         你是一位香港 DSE {subject} 的專業教材編輯。
@@ -59,78 +73,122 @@ with tab_factory:
         """
         st.code(prompt_text, language="text")
         
+        st.markdown("---")
         st.subheader("2. 前往 DeepSeek 官網")
-        st.markdown("帶著複製好的指令和你的 PDF 檔案，前往官網處理。")
-        st.link_button("🔗 打開 DeepSeek (chat.deepseek.com)", "https://chat.deepseek.com", type="primary")
+        st.markdown("帶著複製好的指令和你的檔案，前往官網處理。")
+        st.link_button("🔗 打開 chat.deepseek.com", "https://chat.deepseek.com", type="primary")
 
+    # 右欄：接收結果 (使用 st.form 實現按鈕觸發)
     with col2:
         st.subheader("3. 接收成果")
-        st.write("DeepSeek 整理好後，請將**所有文字複製**，並貼在下方：")
+        st.write("DeepSeek 整理好後，請將**所有文字複製**，貼在下方並按確認：")
         
-        cleaned_text = st.text_area("在此貼上 DeepSeek 的回應內容...", height=300)
-        
-        if cleaned_text:
-            word_count = len(cleaned_text)
-            st.success(f"✅ 已接收 {word_count} 字的筆記！")
+        # --- 這裡使用了 Form 表單 ---
+        with st.form("clean_data_form"):
+            cleaned_text_input = st.text_area("在此貼上 DeepSeek 的回應內容...", height=350)
             
-            # 下載按鈕
-            file_name = f"{subject}_Cleaned_Notes.txt"
-            st.download_button(
-                label="📥 下載 .txt 檔案 (用於 NotebookLM)",
-                data=cleaned_content if 'cleaned_content' in locals() else cleaned_text,
-                file_name=file_name,
-                mime="text/plain"
-            )
-            st.info("👉 下一步：將此 .txt 上傳至 NotebookLM 生成 Audio，然後到「智能温習室」使用。")
+            # 這是你要的「執行按鈕」
+            submitted = st.form_submit_button("✅ 確認並建立檔案")
+            
+        # 當按鈕被按下後執行
+        if submitted:
+            if cleaned_text_input.strip():
+                word_count = len(cleaned_text_input)
+                st.success(f"🎉 成功接收！共 {word_count} 字。")
+                st.balloons() # 給點鼓勵效果
+                
+                # 下載按鈕
+                file_name = f"{subject}_Cleaned_Notes.txt"
+                st.download_button(
+                    label="📥 點擊下載 .txt 檔案 (用於 NotebookLM)",
+                    data=cleaned_text_input,
+                    file_name=file_name,
+                    mime="text/plain"
+                )
+                st.info("👉 現在，請將此檔案上傳至 NotebookLM 生成 Audio，然後到「步驟二」使用。")
+            else:
+                st.error("⚠️ 內容是空的！請先貼上文字再按確認。")
 
 # ==========================================
-# TAB 2: 智能温習室 (Study Room) - 保持不變
+# TAB 2: 智能温習室 (Study Room)
 # ==========================================
 with tab_study:
     st.header(f"🎓 {subject} - 衝刺模式")
     
     col_input, col_main = st.columns([1, 2])
+    
+    # 左側：資源上傳區
     with col_input:
-        st.markdown("### 載入資源")
-        # 這裡只需要簡單的 txt 和 mp3 上傳
-        notes_file = st.file_uploader("上傳剛才下載的筆記 (.txt)", type=["txt", "md"], key="notes")
-        audio_file = st.file_uploader("上傳 NotebookLM 音檔 (.mp3)", type=["mp3", "wav"], key="audio")
+        st.markdown("### 📥 載入溫習資源")
+        st.caption("請上傳剛剛下載的 TXT 以及 NotebookLM 的 MP3")
         
+        notes_file = st.file_uploader("1. 筆記檔案 (.txt/.md)", type=["txt", "md"], key="notes")
+        audio_file = st.file_uploader("2. 導讀音檔 (.mp3/.wav)", type=["mp3", "wav"], key="audio")
+        
+        # 讀取文字內容
         notes_text = ""
         if notes_file:
              notes_text = notes_file.read().decode("utf-8")
     
+    # 右側：主要功能區
     with col_main:
         if not notes_text:
-            st.info("👈 請先上傳筆記")
+            st.info("👈 請先在左側上傳筆記檔案以解鎖功能。")
         else:
+            # 檢查 API Key
             if not client:
-                 st.error("⚠️ 請輸入 API Key 才能使用 AI 問答功能")
+                 st.error("⚠️ 未偵測到 API Key。請在 Secrets 或 Sidebar 設定，才能使用 AI 問答。")
                  st.stop()
                  
-            sub_tab1, sub_tab2, sub_tab3 = st.tabs(["🎧 聽覺學習", "💬 導師問答", "✍️ 模擬試卷"])
+            # 功能分頁
+            sub_tab1, sub_tab2, sub_tab3 = st.tabs(["🎧 多媒體學習", "💬 導師問答", "✍️ 模擬試卷"])
             
+            # --- 1. 聽覺學習 ---
             with sub_tab1:
-                st.subheader("NotebookLM Podcast")
+                st.subheader("🔊 NotebookLM Audio Overview")
                 if audio_file:
                     st.audio(audio_file)
                 else:
-                    st.warning("未上傳音頻")
-                with st.expander("查看筆記內容"):
+                    st.warning("尚未上傳音頻 (建議配合 NotebookLM 使用)")
+                
+                st.divider()
+                with st.expander("📖 查看完整筆記內容", expanded=False):
                     st.markdown(notes_text)
 
+            # --- 2. AI 導師問答 ---
             with sub_tab2:
-                st.subheader("AI 導師")
+                st.subheader("💬 AI 導師 (DeepSeek)")
+                st.caption("根據你的筆記內容，用廣東話為你解題。")
+                
+                # 初始化對話歷史
                 if "messages" not in st.session_state:
                     st.session_state.messages = []
+
+                # 顯示歷史訊息
                 for msg in st.session_state.messages:
                     st.chat_message(msg["role"]).write(msg["content"])
                 
-                if user_input := st.chat_input("輸入問題..."):
+                # 輸入框
+                if user_input := st.chat_input("輸入問題 (例如: 解釋呢個 Concept)..."):
+                    # 顯示用戶問題
                     st.session_state.messages.append({"role": "user", "content": user_input})
                     st.chat_message("user").write(user_input)
+                    
+                    # 呼叫 AI
                     with st.chat_message("assistant"):
-                        rag_prompt = f"你是 DSE 導師。根據筆記回答 (廣東話)：\n{notes_text[:10000]}"
+                        rag_prompt = f"""
+                        你是一位香港 DSE {subject} 科目的補習導師。
+                        請【嚴格根據以下筆記內容】回答學生的問題。
+                        
+                        規則：
+                        1. 必須使用【廣東話】口語。
+                        2. 引用筆記中的關鍵字。
+                        3. 若筆記未提及，請誠實告知。
+                        
+                        筆記內容：
+                        {notes_text[:12000]}
+                        """
+                        
                         stream = client.chat.completions.create(
                             model="deepseek-chat",
                             messages=[
@@ -140,13 +198,35 @@ with tab_study:
                             stream=True
                         )
                         response = st.write_stream(stream)
+                    
+                    # 儲存 AI 回答
                     st.session_state.messages.append({"role": "assistant", "content": response})
 
+            # --- 3. 模擬試卷 ---
             with sub_tab3:
-                if st.button("生成題目"):
-                     with st.spinner("出卷中..."):
+                st.subheader("🔥 DSE 題目生成器")
+                
+                col_q1, col_q2 = st.columns(2)
+                with col_q1:
+                    diff_level = st.select_slider("難度", options=["Level 3", "Level 4", "Level 5", "Level 5**"], value="Level 4")
+                with col_q2:
+                    q_type = st.radio("題型", ["MC (多項選擇)", "LQ (長題目)"], horizontal=True)
+
+                if st.button("🚀 生成題目"):
+                     with st.spinner("DeepSeek 正在參考筆記出卷..."):
+                        gen_prompt = f"""
+                        角色：香港考評局 DSE {subject} 出卷員。
+                        任務：根據提供的筆記內容，設計一條 {diff_level} 程度的 {q_type}。
+                        
+                        要求：
+                        1. 題目內容清晰。
+                        2. 提供標準答案 (Marking Scheme)。
+                        3. 若是 MC，解釋每個選項。
+                        
+                        筆記內容：{notes_text[:5000]}
+                        """
                         res = client.chat.completions.create(
                             model="deepseek-chat",
-                            messages=[{"role": "user", "content": f"根據筆記出 DSE 題目：{notes_text[:5000]}"}]
+                            messages=[{"role": "user", "content": gen_prompt}]
                         )
                         st.markdown(res.choices[0].message.content)
