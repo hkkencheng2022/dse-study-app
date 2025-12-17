@@ -1,182 +1,4 @@
-import streamlit as st
-from openai import OpenAI
-
-# --- 1. 頁面設定 ---
-st.set_page_config(
-    page_title="DSE 智能温習系統 (Web版)", 
-    layout="wide", 
-    page_icon="🇭🇰",
-    initial_sidebar_state="expanded"
-)
-
-# --- 2. API Key 設定 ---
-api_key = None
-if "DEEPSEEK_API_KEY" in st.secrets:
-    api_key = st.secrets["DEEPSEEK_API_KEY"]
-else:
-    api_key = st.sidebar.text_input("DeepSeek API Key (用於 Tab 2)", type="password")
-
-# 初始化 Client
-client = None
-if api_key:
-    client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
-
-# --- 3. 側邊欄 ---
-with st.sidebar:
-    st.title("🇭🇰 DSE 備戰中心")
-    st.caption("官網清洗 -> 貼上筆記 -> 智能温習")
-    st.divider()
-    
-    subject = st.selectbox(
-        "當前科目", 
-        ["Biology", "Chemistry", "Economics", "Chinese", "English", "History", "Maths", "Liberal Studies"]
-    )
-    
-    st.info("""
-    **💡 極速流程：**
-    1. **Tab 1:** 獲取指令 -> 去 DeepSeek 官網整理 -> 複製結果。
-    2. **Tab 2:** 選擇「直接貼上」 -> 貼上文字。
-    3. (選填) 上傳 NotebookLM 的音檔。
-    4. 開始温習！
-    """)
-
-# --- 4. 主功能區 ---
-tab_factory, tab_study = st.tabs(["🏭 步驟一：官網資料清洗", "🎓 步驟二：智能温習室"])
-
-# ==========================================
-# TAB 1: 官網資料清洗
-# ==========================================
-with tab_factory:
-    st.header(f"🚀 {subject} - 資料清洗橋樑")
-    st.markdown("利用 DeepSeek 官網處理掃描檔、手寫筆記或亂碼 PDF。")
-    
-    col1, col2 = st.columns([1, 1])
-    
-    with col1:
-        st.subheader("1. 複製指令 (Prompt)")
-        st.write("點擊右上角複製按鈕，將指令貼給 DeepSeek：")
-        prompt_text = f"""
-        (請上傳附件 PDF/圖片)
-        你是一位香港 DSE {subject} 的專業教材編輯。
-        請閱讀我上傳的文件，並將其整理為一份「結構清晰」的 Markdown 筆記。
-        
-        要求：
-        1. 【去蕪存菁】：去除頁碼、廣告、重複的考試規則。
-        2. 【結構化】：按課題 (Topic) 使用 # 和 ## 標題分類。
-        3. 【關鍵詞】：保留所有 DSE 專用術語 (Keywords)。
-        4. 【題目】：如果內容包含題目與答案，請整理為 Q: ... A: ... 格式。
-        5. 【輸出】：直接輸出整理後的內容，不需要開場白。
-        """
-        st.code(prompt_text, language="text")
-        st.link_button("🔗 前往 DeepSeek 官網 (chat.deepseek.com)", "https://chat.deepseek.com", type="primary")
-
-    with col2:
-        st.subheader("2. (選填) 備份存檔")
-        st.write("如果你想把整理好的筆記存成檔案，可以在這裡貼上並下載：")
-        
-        with st.form("save_file_form"):
-            text_to_save = st.text_area("貼上 DeepSeek 內容...", height=200)
-            submitted = st.form_submit_button("💾 下載 .txt 檔")
-        
-        if submitted and text_to_save:
-            st.success(f"已接收 {len(text_to_save)} 字！")
-            st.download_button(
-                label="📥 點擊下載",
-                data=text_to_save,
-                file_name=f"{subject}_Cleaned_Notes.txt",
-                mime="text/plain"
-            )
-
-# ==========================================
-# TAB 2: 智能温習室
-# ==========================================
-with tab_study:
-    st.header(f"🎓 {subject} - 衝刺模式")
-    
-    col_input, col_main = st.columns([1, 2])
-    
-    # --- 左側：資源輸入區 ---
-    with col_input:
-        st.markdown("### 📥 載入溫習資源")
-        
-        input_method = st.radio(
-            "選擇筆記來源：", 
-            ["📋 直接貼上文字", "📂 上傳 .txt 檔案"], 
-            horizontal=True
-        )
-        
-        notes_text = ""
-        
-        if input_method == "📋 直接貼上文字":
-            notes_text = st.text_area(
-                "請在此貼上 DeepSeek 整理好的筆記內容：", 
-                height=300,
-                placeholder="在此貼上 (# 課題...)"
-            )
-        else:
-            notes_file = st.file_uploader("上傳筆記檔案", type=["txt", "md"])
-            if notes_file:
-                notes_text = notes_file.read().decode("utf-8")
-
-        st.markdown("---")
-        audio_file = st.file_uploader("上傳 NotebookLM 音檔 (選填)", type=["mp3", "wav"])
-    
-    # --- 右側：主要功能區 ---
-    with col_main:
-        if not notes_text:
-            st.info("👈 請在左側「貼上文字」或「上傳檔案」以解鎖功能。")
-        else:
-            if not client:
-                 st.error("⚠️ 未偵測到 API Key。請在 Secrets 設定。")
-                 st.stop()
-                 
-            st.caption(f"✅ 已載入筆記內容 (共 {len(notes_text)} 字)")
-
-            sub_tab1, sub_tab2, sub_tab3 = st.tabs(["🎧 多媒體學習", "💬 導師問答", "✍️ 模擬試卷"])
-            
-            # --- Sub Tab 1: 聽覺學習 ---
-            with sub_tab1:
-                st.subheader("🔊 NotebookLM Audio")
-                if audio_file:
-                    st.audio(audio_file)
-                else:
-                    st.warning("尚未上傳音頻 (可略過)")
-                
-                with st.expander("📖 查看完整筆記內容", expanded=False):
-                    st.markdown(notes_text)
-
-            # --- Sub Tab 2: AI 導師問答 ---
-            with sub_tab2:
-                st.subheader("💬 AI 導師")
-                
-                if "messages" not in st.session_state:
-                    st.session_state.messages = []
-
-                for msg in st.session_state.messages:
-                    st.chat_message(msg["role"]).write(msg["content"])
-                
-                if user_input := st.chat_input("輸入問題 (e.g., 解釋下呢段)..."):
-                    st.session_state.messages.append({"role": "user", "content": user_input})
-                    st.chat_message("user").write(user_input)
-                    
-                    with st.chat_message("assistant"):
-                        rag_prompt = f"""
-                        你是一位香港 DSE {subject} 導師。
-                        請【嚴格根據以下筆記】回答學生問題，並使用【廣東話】。
-                        筆記內容：{notes_text[:12000]}
-                        """
-                        stream = client.chat.completions.create(
-                            model="deepseek-chat",
-                            messages=[
-                                {"role": "system", "content": rag_prompt},
-                                {"role": "user", "content": user_input}
-                            ],
-                            stream=True
-                        )
-                        response = st.write_stream(stream)
-                    st.session_state.messages.append({"role": "assistant", "content": response})
-
-            # --- Sub Tab 3: 模擬試卷 (重點修改部分) ---
+# --- Sub Tab 3: 模擬試卷 (已修復數學符號顯示問題) ---
             with sub_tab3:
                 st.subheader("🔥 題目生成器")
                 
@@ -197,10 +19,10 @@ with tab_study:
                 if st.button(f"🚀 生成 {num_questions} 條題目"):
                      with st.spinner(f"DeepSeek 正在參考筆記，設計 {num_questions} 條題目..."):
                         
-                        # 定義一個特殊的分割符號，讓 AI 把題目和答案切開
+                        # 定義分隔符號
                         separator = "<<<SPLIT_HERE>>>"
 
-                        # Prompt Engineering
+                        # Prompt Engineering (加入數學格式要求)
                         gen_prompt = f"""
                         角色：香港考評局 DSE {subject} 出卷員。
                         任務：根據提供的筆記內容，設計 **{num_questions} 條** {diff} 程度的 {q_type}。
@@ -221,6 +43,13 @@ with tab_study:
                               - D. 選項四
                         
                         3. **LQ 格式**：請標註分數 (e.g., [4 marks])。
+
+                        4. **數學符號 (Math LaTeX)**：
+                           - 所有數學公式、變數 (如 x, y, k)、希臘字母 (如 alpha, beta) **必須** 使用 LaTeX 格式。
+                           - **必須** 使用單個錢號 `$` 包裹內文公式 (Inline Math)。
+                           - **必須** 使用雙錢號 `$$` 包裹獨立一行的公式 (Block Math)。
+                           - 錯誤範例：( x^2 ) 或 [ x^2 ]
+                           - 正確範例： $x^2 - 4x + k = 0$ 或 $\\alpha + \\beta = 4$
                         
                         筆記內容範圍：{notes_text[:6000]}
                         """
@@ -239,19 +68,18 @@ with tab_study:
                                 questions_part = parts[0].strip()
                                 answers_part = parts[1].strip()
                             else:
-                                # 如果 AI 忘記加分隔符號，就直接顯示全部
                                 questions_part = full_text
                                 answers_part = "AI 未能自動分離答案，請參閱上方內容。"
                             
                             st.success("✅ 出卷完成！")
                             
-                            # 1. 顯示題目 (沒有答案)
+                            # 1. 顯示題目
                             st.markdown("### 📝 試題卷")
-                            st.markdown(questions_part)
+                            st.markdown(questions_part) # Streamlit 會自動渲染裡面的 $LaTeX$
                             
                             st.markdown("---")
                             
-                            # 2. 顯示隱藏的答案按鈕 (Expander)
+                            # 2. 顯示答案
                             st.info("👇 完成作答後，點擊下方查看答案")
                             with st.expander("🔐 點擊查看 Marking Scheme (參考答案)"):
                                 st.markdown("### ✅ 參考答案與詳解")
