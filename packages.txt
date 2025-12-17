@@ -2,3 +2,4 @@ tesseract-ocr
 tesseract-ocr-chi-tra
 tesseract-ocr-eng
 ffmpeg
+libmagic1
