@@ -90,8 +90,6 @@ def clean_latex(text):
     text = re.sub(r'\\\[(.*?)\\\]', r'$$\1$$', text, flags=re.DOTALL)
     text = re.sub(r'\\\((.*?)\\\)', r'$\1$', text, flags=re.DOTALL)
     
-    # 移除可能破壞 HTML 的特殊字符（如果在 HTML 屬性中使用）
-    # 但保留內容中的引號
     return text
 
 def manual_save_to_cloud(subject, question, answer, note_type):
@@ -204,7 +202,7 @@ if pinecone_key:
 tab_factory, tab_study, tab_review = st.tabs(["🏭 資料清洗", "🎓 智能溫習", "🧠 抽卡溫習"])
 
 # ==========================================
-# TAB 1: 資料清洗
+# TAB 1: 資料清洗 (已修正下載按鈕問題)
 # ==========================================
 with tab_factory:
     st.header(f"🚀 {current_subject} - 資料清洗")
@@ -227,10 +225,10 @@ with tab_factory:
         st.link_button("🔗 前往 DeepSeek", "https://chat.deepseek.com", type="primary")
     with c2:
         st.subheader("2. 備份")
-        with st.form("save"):
-            txt = st.text_area("貼上內容...", height=250)
-            if st.form_submit_button("💾 下載") and txt:
-                st.download_button("📥 下載", txt, f"{current_subject}_Notes.txt")
+        # --- 修正: 移除 st.form，因為 st.download_button 不支援在 form 內 ---
+        txt = st.text_area("貼上內容...", height=250)
+        if txt:
+             st.download_button("💾 下載 .txt", txt, file_name=f"{current_subject}_Notes.txt", mime="text/plain")
 
 # ==========================================
 # TAB 2: 智能溫習
@@ -269,7 +267,6 @@ with tab_study:
                 if "messages" not in st.session_state:
                     st.session_state.messages = []
                 for m in st.session_state.messages:
-                    # 使用 clean_latex 確保顯示正確
                     content = clean_latex(m["content"])
                     if content.startswith('$$') and content.endswith('$$'):
                         st.chat_message(m["role"]).latex(content.replace('$$', ''))
@@ -285,7 +282,6 @@ with tab_study:
                         ans = client.chat.completions.create(model="deepseek-chat", messages=[{"role":"system","content":rag},{"role":"user","content":q}]).choices[0].message.content
                         display_ans = clean_latex(ans)
                         
-                        # 簡單的數學渲染判斷
                         if '$$' in display_ans:
                             parts = re.split(r'(\$\$.*?\$\$)', display_ans, flags=re.DOTALL)
                             for part in parts:
@@ -339,7 +335,7 @@ with tab_study:
                     st.button("☁️ 加入題庫", key="sq", on_click=manual_save_to_cloud, args=(current_subject, quiz['q'], quiz['a'], "模擬卷"))
 
 # ==========================================
-# TAB 3: 權重機率抽卡 (重點修正)
+# TAB 3: 權重機率抽卡
 # ==========================================
 with tab_review:
     c_title, c_act = st.columns([4, 1])
@@ -389,45 +385,34 @@ with tab_review:
             data = card['metadata']
             mid = card['id']
 
-            # --- 修正後的卡片顯示邏輯 ---
             subject = data.get('subject')
             question_text = data.get('question', '')
             cleaned_question = clean_latex(question_text)
 
-            # 開啟卡片容器 (模擬 HTML 結構)
             st.markdown(f"""
             <div class="flashcard">
                 <div class="card-subject">{subject}</div>
                 <div class="card-question">
             """, unsafe_allow_html=True)
 
-            # 判斷是否包含區塊數學公式 $$...$$
-            # 如果有，我們必須分割字串，分別渲染 HTML 文本和 Streamlit LaTeX
             if '$$' in cleaned_question:
                 parts = re.split(r'(\$\$.*?\$\$)', cleaned_question, flags=re.DOTALL)
                 for part in parts:
                     if part.startswith('$$') and part.endswith('$$'):
-                        # 這是數學公式，使用 st.latex
                         st.latex(part.replace('$$', ''))
                     else:
-                        # 這是普通文本，使用 markdown (不帶 unsafe_allow_html，以便解析行內數學 $)
                         if part.strip():
                             st.write(part)
             else:
-                # 如果沒有複雜公式，直接嘗試用 write 渲染 (支援行內 $)
                 st.write(cleaned_question)
 
-            # 關閉卡片容器
             st.markdown("""
                 </div>
             </div>
             """, unsafe_allow_html=True)
-            # ---------------------------
 
             with st.expander("👁️ 翻開詳解 (Show Detail)", expanded=False):
                 st.markdown("### ✅ 詳細解析")
-                # 這裡保留 unsafe_allow_html=True 以支援黃色高亮
-                # 如果答案中有大量數學公式，可能也需要上述的 split 邏輯
                 st.markdown(clean_latex(data.get('answer')), unsafe_allow_html=True)
                 st.divider()
                 st.markdown("<div style='text-align: center; color: grey; margin-bottom: 10px;'>這題你覺得？</div>", unsafe_allow_html=True)
