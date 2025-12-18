@@ -10,13 +10,54 @@ import json
 import random
 import re
 
-# --- 1. 頁面設定 ---
+# --- 1. 頁面設定 (加入 Custom CSS 優化介面) ---
 st.set_page_config(
-    page_title="DSE 智能温習系統 (Force Switch Fix)", 
+    page_title="DSE 智能温習系統 (UI Pro)", 
     layout="wide", 
     page_icon="🇭🇰",
     initial_sidebar_state="expanded"
 )
+
+# 注入 CSS 以實現 NotebookLM 風格卡片
+st.markdown("""
+<style>
+    /* 卡片容器風格 */
+    .flashcard {
+        background-color: #ffffff;
+        border: 1px solid #e0e0e0;
+        border-radius: 12px;
+        padding: 30px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+        margin-bottom: 20px;
+        text-align: center;
+        transition: transform 0.2s;
+    }
+    .flashcard:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 16px rgba(0,0,0,0.1);
+    }
+    .card-subject {
+        font-size: 0.85em;
+        font-weight: 600;
+        color: #888;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        margin-bottom: 15px;
+    }
+    .card-question {
+        font-size: 1.4em;
+        font-weight: 500;
+        color: #333;
+        line-height: 1.6;
+        margin-bottom: 20px;
+    }
+    /* 評分按鈕區塊優化 */
+    .stButton button {
+        border-radius: 20px !important;
+        font-weight: bold !important;
+    }
+</style>
+""", unsafe_allow_html=True)
 
 # --- 2. 初始化核心模型 ---
 @st.cache_resource
@@ -63,29 +104,25 @@ def manual_save_to_cloud(subject, question, answer, note_type):
     except Exception as e:
         st.error(f"上傳失敗: {e}")
 
-# [SRS 邏輯] 更新權重
+# [極速版] 更新權重
 def update_weight(item_id, rating):
     if not index: return
     new_weight = 20.0
     msg = ""
+    # 簡化後的評分邏輯
     if rating == 1:
         new_weight = 20.0
-        msg = "🔴 高頻複習"
+        msg = "⭕ 標記：需重溫"
     elif rating == 2:
         new_weight = 5.0
-        msg = "🟡 中頻複習"
+        msg = "⚠️ 標記：有點印象"
     elif rating == 3:
         new_weight = 1.0
-        msg = "🟢 低頻複習"
+        msg = "✅ 標記：已掌握"
     
     try:
-        # 非同步更新
         index.update(id=item_id, set_metadata={"weight": new_weight})
         st.toast(msg, icon="⚡")
-        
-        # [關鍵] 記錄這張卡的 ID，防止下一張重複
-        st.session_state['previous_card_id'] = item_id
-        
         # 清除當前卡片，強制換卡
         if 'current_card_data' in st.session_state:
             del st.session_state['current_card_data']
@@ -98,7 +135,6 @@ def delete_from_cloud(item_id):
     try:
         index.delete(ids=[item_id])
         st.toast("🗑️ 已刪除", icon="✅")
-        # 刪除就不需要記錄 ID 了，因為它已經消失，不會再抽到
         if 'current_card_data' in st.session_state:
             del st.session_state['current_card_data']
         if 'card_pool' in st.session_state:
@@ -106,10 +142,9 @@ def delete_from_cloud(item_id):
     except Exception as e:
         st.error(f"刪除失敗: {e}")
 
-# [跳過按鈕]
 def skip_card():
-    # 記錄當前 ID，防止下一張一樣
     if 'current_card_data' in st.session_state:
+        # 記錄 ID 防止重複
         st.session_state['previous_card_id'] = st.session_state['current_card_data']['id']
         del st.session_state['current_card_data']
 
@@ -139,7 +174,7 @@ def copy_button_component(text_to_copy):
 # --- 5. 側邊欄 ---
 with st.sidebar:
     st.title("🇭🇰 DSE 備戰中心")
-    st.caption("No-Repeat Flashcards")
+    st.caption("UI Pro Edition")
     st.divider()
     if not deepseek_key: deepseek_key = st.text_input("DeepSeek Key", type="password")
     if not pinecone_key: pinecone_key = st.text_input("Pinecone Key", type="password")
@@ -158,7 +193,7 @@ if pinecone_key:
         st.sidebar.error(f"連線失敗: {e}")
 
 # --- 6. 主功能區 ---
-tab_factory, tab_study, tab_review = st.tabs(["🏭 資料清洗", "🎓 智能溫習", "🧠 權重抽卡 (Flashcard)"])
+tab_factory, tab_study, tab_review = st.tabs(["🏭 資料清洗", "🎓 智能溫習", "🧠 抽卡溫習 (UI Update)"])
 
 # ==========================================
 # TAB 1: 資料清洗
@@ -205,6 +240,10 @@ with tab_study:
                 with st.expander("筆記"): st.markdown(notes)
             
             with s2:
+                # 語系自動偵測
+                default_lang_idx = 1 if current_subject == "English" else 0
+                lang_choice = st.radio("回答語言", ["中文 (廣東話)", "English"], index=default_lang_idx, horizontal=True)
+
                 if "messages" not in st.session_state: st.session_state.messages = []
                 for m in st.session_state.messages: 
                     st.chat_message(m["role"]).write(clean_latex(m["content"]))
@@ -213,7 +252,10 @@ with tab_study:
                     st.session_state.messages.append({"role": "user", "content": q})
                     st.chat_message("user").write(q)
                     with st.chat_message("assistant"):
-                        rag = f"DSE 導師，用廣東話答。數學公式用單個 $ 包住。\n筆記：{notes[:12000]}"
+                        # Prompt 根據語言調整
+                        lang_instruction = "用廣東話回答" if lang_choice == "中文 (廣東話)" else "Answer in English"
+                        rag = f"DSE 導師。{lang_instruction}。數學公式單個 $ 包住。\n筆記：{notes[:12000]}"
+                        
                         ans = client.chat.completions.create(model="deepseek-chat", messages=[{"role":"system","content":rag},{"role":"user","content":q}]).choices[0].message.content
                         display_ans = clean_latex(ans)
                         st.markdown(display_ans)
@@ -221,12 +263,30 @@ with tab_study:
                     st.session_state.messages.append({"role": "assistant", "content": ans})
             
             with s3:
-                c1,c2,c3 = st.columns([2,2,1])
+                # [優化] 語言選擇邏輯
+                st.subheader("設定出題參數")
+                
+                # 自動判斷預設語言
+                default_idx = 1 if current_subject == "English" else 0
+                
+                c1,c2,c3,c4 = st.columns([2,2,1,2])
                 with c1: diff = st.select_slider("難度", ["L3","L4","L5","L5**"], "L4")
                 with c2: qt = st.radio("題型", ["MC","LQ"], horizontal=True)
                 with c3: num = st.number_input("數量", 1, 10, 1)
-                if st.button("🚀 出題"):
-                    prompt = f"DSE 出卷員。出 {num} 條 {diff} {qt}。1.先列題目，插入 `<<<SPLIT>>>`，再列答案。2.MC垂直分行。3.數學公式必須用單個 $ 包住。筆記：{notes[:6000]}"
+                with c4: 
+                    # 新增語言選擇器
+                    lang = st.selectbox("題目語言", ["中文 (繁體)", "English"], index=default_idx)
+
+                if st.button("🚀 生成題目"):
+                    # Prompt 加入語言指令
+                    prompt = f"""
+                    DSE 出卷員。
+                    請用 **{lang}** 出 {num} 條 {diff} {qt}。
+                    1. 先列題目，插入 `<<<SPLIT>>>`，再列答案。
+                    2. MC 選項垂直分行。
+                    3. 數學公式單個 $ 包住。
+                    筆記：{notes[:6000]}
+                    """
                     res = client.chat.completions.create(model="deepseek-chat", messages=[{"role":"user","content":prompt}]).choices[0].message.content
                     q_p, a_p = res.split("<<<SPLIT>>>") if "<<<SPLIT>>>" in res else (res, "見上方")
                     st.session_state['q'] = {"q": q_p, "a": a_p}
@@ -240,17 +300,24 @@ with tab_study:
                     st.button("☁️ 加入題庫", key="sq", on_click=manual_save_to_cloud, args=(current_subject, quiz['q'], quiz['a'], "模擬卷"))
 
 # ==========================================
-# TAB 3: 權重機率抽卡 (Anti-Repeat Fix)
+# TAB 3: 權重機率抽卡 (UI Overhaul)
 # ==========================================
 with tab_review:
-    st.header("🧠 權重抽卡温習 (Flashcard)")
-    
+    # 標題區
+    c_title, c_act = st.columns([4, 1])
+    with c_title:
+        st.subheader("🧠 抽卡溫習 (NotebookLM Style)")
+    with c_act:
+        st.button("⏭️ 下一張", on_click=skip_card, type="primary", use_container_width=True)
+
     if not index: st.warning("⚠️ 請先設定 Pinecone Key"); st.stop()
 
-    c_filt, c_reset = st.columns([3, 1])
-    with c_filt: 
-        f_sub = st.selectbox("📂 選擇學科抽題", ["顯示全部", "Biology", "Chemistry", "Economics", "Chinese", "English", "History", "Maths"])
+    # 篩選區
+    c_filt, c_space = st.columns([2, 3])
+    with c_filt:
+        f_sub = st.selectbox("📂 選擇學科", ["顯示全部", "Biology", "Chemistry", "Economics", "Chinese", "English", "History", "Maths"])
     
+    # 篩選變更偵測
     if 'last_filter' not in st.session_state: st.session_state.last_filter = f_sub
     if st.session_state.last_filter != f_sub:
         if 'card_pool' in st.session_state: del st.session_state['card_pool']
@@ -258,12 +325,7 @@ with tab_review:
         st.session_state.last_filter = f_sub
         st.rerun()
 
-    with c_reset:
-        st.write("")
-        st.button("⏭️ 下一張", on_click=skip_card, type="primary", use_container_width=True)
-
-    st.markdown("---")
-
+    # 邏輯區
     try:
         # 1. 獲取題庫
         if 'card_pool' not in st.session_state:
@@ -271,72 +333,74 @@ with tab_review:
             meta_filter = {"subject": f_sub} if f_sub != "顯示全部" else None
             top_k_count = 500 if f_sub == "顯示全部" else 200
             
-            with st.spinner(f"正在載入{f_sub}題庫..."):
+            with st.spinner(f"載入題庫..."):
                 res = index.query(vector=dummy, top_k=top_k_count, include_metadata=True, filter=meta_filter)
                 st.session_state['card_pool'] = res['matches']
         
         pool = st.session_state['card_pool']
 
-        # 2. 檢查題庫
         if not pool:
             st.info(f"📭 題庫中暫時沒有【{f_sub}】的紀錄。")
         else:
-            st.caption(f"📚 題庫總數: {len(pool)} 題")
-
-            # 3. 抽卡邏輯 (含防重複機制)
+            # 2. 抽卡
             if 'current_card_data' not in st.session_state:
                 weights = [float(m['metadata'].get('weight', 20.0)) for m in pool]
                 
-                # [關鍵修正]：強制迴圈，直到抽到不重複的卡片 (除非只有一張)
+                # 防重複邏輯
                 chosen_card = random.choices(pool, weights=weights, k=1)[0]
-                
                 if len(pool) > 1 and 'previous_card_id' in st.session_state:
                     prev_id = st.session_state['previous_card_id']
-                    # 如果抽到一樣的，最多重試 5 次
-                    retry_count = 0
-                    while chosen_card['id'] == prev_id and retry_count < 5:
+                    retry = 0
+                    while chosen_card['id'] == prev_id and retry < 5:
                         chosen_card = random.choices(pool, weights=weights, k=1)[0]
-                        retry_count += 1
+                        retry += 1
                 
                 st.session_state['current_card_data'] = chosen_card
 
-            # 4. 顯示卡片
+            # 3. 顯示卡片 (新 UI)
             card = st.session_state['current_card_data']
             data = card['metadata']
             mid = card['id']
-            w = float(data.get('weight', 20.0))
             
-            w_label = "🔴 高頻複習" if w == 20.0 else ("🟡 中頻複習" if w == 5.0 else "🟢 低頻複習")
-            w_color = "#ff4b4b" if w == 20.0 else ("#ffa500" if w == 5.0 else "#28a745")
-
+            # 使用自定義 HTML/CSS 渲染卡片
             st.markdown(f"""
-            <div style="border: 2px solid {w_color}; border-radius: 10px; padding: 20px; margin-bottom: 20px; background-color: white;">
-                <div style="display:flex; justify-content:space-between; margin-bottom:10px;">
-                    <span style="font-weight:bold; color:#0068c9; font-size:1.1em;">{data.get('subject')}</span>
-                    <span style="background-color:{w_color}; color:white; padding:2px 8px; border-radius:5px; font-size:0.8em;">{w_label}</span>
+            <div class="flashcard">
+                <div class="card-subject">{data.get('subject')}</div>
+                <div class="card-question">
+                    {clean_latex(data.get('question'))}
                 </div>
             </div>
             """, unsafe_allow_html=True)
-            
-            with st.container():
-                st.markdown(clean_latex(data.get('question')))
 
-            with st.expander("👁️ 翻開答案 (Check Answer)", expanded=True):
+            # 4. 翻牌區 (極簡評分)
+            # 使用 container 讓按鈕居中更美觀
+            with st.expander("👁️ 翻開答案 (Show Answer)", expanded=False):
                 st.markdown("### ✅ 解析")
                 st.markdown(clean_latex(data.get('answer')))
+                
                 st.divider()
-                st.markdown("#### 🧠 評分並前往下一張")
+                st.markdown("<div style='text-align: center; color: grey; margin-bottom: 10px;'>這題你覺得？</div>", unsafe_allow_html=True)
                 
-                c1, c2, c3, c4 = st.columns(4)
+                # 極簡評分按鈕：置中排列
+                # 使用 columns 來置中：空 - 按鈕 - 空
+                _, col_btns, _ = st.columns([1, 4, 1])
                 
-                with c1: 
-                    st.button("🔴 完全不熟", key="btn_hard", on_click=update_weight, args=(mid, 1), use_container_width=True)
-                with c2: 
-                    st.button("🟡 不太熟", key="btn_med", on_click=update_weight, args=(mid, 2), use_container_width=True)
-                with c3: 
-                    st.button("🟢 初步熟悉", key="btn_easy", on_click=update_weight, args=(mid, 3), use_container_width=True)
-                with c4: 
-                    st.button("🗑️ 刪除", key="btn_del", on_click=delete_from_cloud, args=(mid,), use_container_width=True)
+                with col_btns:
+                    # 使用小欄位排按鈕
+                    b1, b2, b3, b_del = st.columns([1, 1, 1, 0.5])
+                    
+                    with b1:
+                        # 紅色：完全不熟
+                        st.button("❌ 忘記了", key="hard", on_click=update_weight, args=(mid, 1), use_container_width=True, type="secondary")
+                    with b2:
+                        # 黃色：不太確定
+                        st.button("🟡 不確定", key="med", on_click=update_weight, args=(mid, 2), use_container_width=True, type="secondary")
+                    with b3:
+                        # 綠色：記得了
+                        st.button("✅ 記得了", key="easy", on_click=update_weight, args=(mid, 3), use_container_width=True, type="primary")
+                    with b_del:
+                        # 刪除：小圖示
+                        st.button("🗑️", key="del", on_click=delete_from_cloud, args=(mid,), use_container_width=True)
 
     except Exception as e:
         st.error(f"系統錯誤: {e}")
