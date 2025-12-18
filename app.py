@@ -79,55 +79,23 @@ pinecone_key = st.secrets.get("PINECONE_API_KEY")
 
 # --- 4. 核心函數 ---
 def clean_latex(text):
-    """修正 LaTeX 格式為 MathJax 格式，避免破壞已有的 $...$ 或 $$...$$。"""
+    """
+    修正 LaTeX 格式，將 \[ \] 轉換為 $$ $$，\( \) 轉換為 $ $
+    並嘗試保護已有的數學符號
+    """
     if not text or not isinstance(text, str):
-        return text
-
-    # 1. 保護已有的 MathJax 格式 ($...$ 或 $$...$$)，先替換為特殊標記
-    math_placeholders = {}
-    counter = 0
-
-    def replace_inline_math(match):
-        nonlocal counter
-        placeholder = f"__MATH_INLINE_{counter}__"
-        math_placeholders[placeholder] = match.group(0)
-        counter += 1
-        return placeholder
-
-    def replace_display_math(match):
-        nonlocal counter
-        placeholder = f"__MATH_DISPLAY_{counter}__"
-        math_placeholders[placeholder] = match.group(0)
-        counter += 1
-        return placeholder
-
-    # 應用保護 (先保護已有的，防止後續的 regex 操作誤傷)
-    # 注意：這裡的 regex 要非常小心，確保不匹配 \$ 或 \$\$ (轉義的美元符號)
-    # re.DOTALL 標誌讓 .*? 能匹配換行符
-    text = re.sub(r'\$\$([^\$]*?(?:\$(?!\$)[^\$]*?)*?)\$\$', replace_display_math, text, flags=re.DOTALL)
-    # 匹配不在 \$ 之間的 $...$，且不與 $$...$$ 混淆
-    # (?<!\\)\$ 表示前面不能是反斜線 \
-    # (?!\$) 表示後面不能是 $
-    # (?:\$(?!\$)[^\$]*?)*? 是一個非貪婪的匹配，處理內部可能的 \$ 情況
-    text = re.sub(r'(?<!\\)\$([^\$]*?(?:\$(?!\$)[^\$]*?)*?)(?<!\\)\$(?!\$)', replace_inline_math, text)
-
-    # 2. 處理 LaTeX 的 \[...\] 和 \(...\) 格式 (將其轉換為 MathJax 格式)
-    # 處理 \( ... \) (行內數學) -> $ ... $
-    # 使用 re.DOTALL 以處理跨行的內容
-    text = re.sub(r'\\\(\s*(.*?)\s*\\\)', r'$\1$', text, flags=re.DOTALL)
-    # 處理 \[ ... \] (塊級數學) -> $$ ... $$
-    text = re.sub(r'\\\[\s*(.*?)\s*\\\]', r'$$\1$$', text, flags=re.DOTALL)
-
-
-    # 3. 將保護起來的數學表達式放回去
-    for placeholder, original_math in math_placeholders.items():
-        text = text.replace(placeholder, original_math)
-
+        return ""
+    
+    # 簡單的替換，處理常見的 LaTeX 轉義
+    text = re.sub(r'\\\[(.*?)\\\]', r'$$\1$$', text, flags=re.DOTALL)
+    text = re.sub(r'\\\((.*?)\\\)', r'$\1$', text, flags=re.DOTALL)
+    
+    # 移除可能破壞 HTML 的特殊字符（如果在 HTML 屬性中使用）
+    # 但保留內容中的引號
     return text
 
-
 def manual_save_to_cloud(subject, question, answer, note_type):
-    global index # Assuming 'index' is defined globally after Pinecone initialization
+    global index
     if not index:
         st.error("❌ 未連接 Pinecone")
         return
@@ -149,7 +117,7 @@ def manual_save_to_cloud(subject, question, answer, note_type):
         st.error(f"上傳失敗: {e}")
 
 def update_weight(item_id, rating):
-    global index # Assuming 'index' is defined globally after Pinecone initialization
+    global index
     if not index: return
     new_weight = 20.0
     msg = ""
@@ -171,7 +139,7 @@ def update_weight(item_id, rating):
         st.error(f"更新失敗: {e}")
 
 def delete_from_cloud(item_id):
-    global index # Assuming 'index' is defined globally after Pinecone initialization
+    global index
     if not index: return
     try:
         index.delete(ids=[item_id])
@@ -265,7 +233,7 @@ with tab_factory:
                 st.download_button("📥 下載", txt, f"{current_subject}_Notes.txt")
 
 # ==========================================
-# TAB 2: 智能溫習 (Prompt 重點升級)
+# TAB 2: 智能溫習
 # ==========================================
 with tab_study:
     st.header(f"🎓 {current_subject} - 衝刺模式")
@@ -301,17 +269,12 @@ with tab_study:
                 if "messages" not in st.session_state:
                     st.session_state.messages = []
                 for m in st.session_state.messages:
-                    # 如果內容是純數學公式，可以考慮使用 st.latex()
+                    # 使用 clean_latex 確保顯示正確
                     content = clean_latex(m["content"])
-                    if content.startswith('$') and content.endswith('$'):
-                        # 這是一個行內公式，使用 markdown 渲染
-                        st.chat_message(m["role"]).markdown(content)
-                    elif content.startswith('$$') and content.endswith('$$'):
-                        # 這是一個塊級公式，使用 st.latex()
-                        st.chat_message(m["role"]).latex(content[2:-2]) # 去掉前後的 $$
+                    if content.startswith('$$') and content.endswith('$$'):
+                        st.chat_message(m["role"]).latex(content.replace('$$', ''))
                     else:
-                        # 一般文本
-                        st.chat_message(m["role"]).write(content)
+                        st.chat_message(m["role"]).markdown(content)
 
                 if q := st.chat_input("輸入問題..."):
                     st.session_state.messages.append({"role": "user", "content": q})
@@ -321,17 +284,22 @@ with tab_study:
                         rag = f"DSE 導師。{lang_instruction}。數學公式單個 $ 包住。\n筆記：{notes[:12000]}"
                         ans = client.chat.completions.create(model="deepseek-chat", messages=[{"role":"system","content":rag},{"role":"user","content":q}]).choices[0].message.content
                         display_ans = clean_latex(ans)
-                        # 判斷是否為純公式
-                        if display_ans.startswith('$') and display_ans.endswith('$'):
-                            st.latex(display_ans[1:-1]) # 去掉前後的 $
-                        elif display_ans.startswith('$$') and display_ans.endswith('$$'):
-                            st.latex(display_ans[2:-2]) # 去掉前後的 $$
+                        
+                        # 簡單的數學渲染判斷
+                        if '$$' in display_ans:
+                            parts = re.split(r'(\$\$.*?\$\$)', display_ans, flags=re.DOTALL)
+                            for part in parts:
+                                if part.startswith('$$'):
+                                    st.latex(part.replace('$$', ''))
+                                else:
+                                    st.markdown(part)
                         else:
                             st.markdown(display_ans)
+                            
                         st.button("☁️ 加入題庫", key=f"s_{len(st.session_state.messages)}", on_click=manual_save_to_cloud, args=(current_subject, q, ans, "問答"))
 
                     st.session_state.messages.append({"role": "assistant", "content": ans})
-            # --- [重點修改] Tab 2 Sub 3: 模擬卷 Prompt ---
+            
             with s3:
                 st.subheader("設定出題參數")
                 default_idx = 1 if current_subject == "English" else 0
@@ -341,7 +309,6 @@ with tab_study:
                 with c3: num = st.number_input("數量", 1, 10, 1)
                 with c4: lang = st.selectbox("語言", ["中文 (繁體)", "English"], index=default_idx)
                 if st.button("🚀 生成題目"):
-                    # 升級版 Prompt
                     prompt = f"""
                     角色：香港考評局 DSE {current_subject} 出卷員。
                     語言：請使用 **{lang}**。
@@ -349,15 +316,13 @@ with tab_study:
                     【極重要格式指令】：
                     1. **題目/答案分離**：先列出「試題卷 (Questions)」，插入 `<<<SPLIT>>>`，再列出「答案與詳解 (Marking Scheme)」。
                     2. **MC 選項格式**：必須 **垂直分行**。
-                       正確範例：
-                       A. 選項一
-                       B. 選項二
                     3. **答案格式 (Highlight & Explanation)**：
-                       - 必須提供 **【詳細解釋 (Explanation)】**，分析為何該答案正確，以及其他選項為何錯誤。
+                       - 必須提供 **【詳細解釋 (Explanation)】**。
                        - **正確答案的關鍵字或選項** 必須使用 HTML 黃色高亮語法包住：
                          請使用: `<span class="highlight-answer">正確答案</span>`
-                       - 例子：答案是 <span class="highlight-answer">A</span>。因為...
-                    4. **數學公式**：必須用單個 $ 包住 (例如 $x^2$)。
+                    4. **數學公式**：
+                       - 行內公式用單個 $ 包住 (例如 $x^2$)。
+                       - 獨立公式用兩個 $$ 包住。
                     筆記內容：{notes[:7000]}
                     """
                     res = client.chat.completions.create(model="deepseek-chat", messages=[{"role":"user","content":prompt}]).choices[0].message.content
@@ -370,12 +335,11 @@ with tab_study:
                     st.markdown(clean_latex(quiz['q']))
                     st.info("👇 完成作答後，點擊下方查看詳解")
                     with st.expander("🔐 查看答案與詳細解釋 (Marking Scheme)"):
-                        # 使用 unsafe_allow_html=True 讓黃色高亮生效
                         st.markdown(clean_latex(quiz['a']), unsafe_allow_html=True)
                     st.button("☁️ 加入題庫", key="sq", on_click=manual_save_to_cloud, args=(current_subject, quiz['q'], quiz['a'], "模擬卷"))
 
 # ==========================================
-# TAB 3: 權重機率抽卡
+# TAB 3: 權重機率抽卡 (重點修正)
 # ==========================================
 with tab_review:
     c_title, c_act = st.columns([4, 1])
@@ -425,43 +389,45 @@ with tab_review:
             data = card['metadata']
             mid = card['id']
 
-            # 提取問題中的公式部分進行渲染
+            # --- 修正後的卡片顯示邏輯 ---
+            subject = data.get('subject')
             question_text = data.get('question', '')
             cleaned_question = clean_latex(question_text)
 
-            # 檢查是否包含塊級公式
-            if '$$' in cleaned_question:
-                # 分割文字和公式
-                parts = re.split(r'(\$\$.*?\$\$)', cleaned_question, flags=re.DOTALL)
-                st.markdown(f"""
-                <div class="flashcard">
-                    <div class="card-subject">{data.get('subject')}</div>
-                    <div class="card-question">
-                """, unsafe_allow_html=True)
+            # 開啟卡片容器 (模擬 HTML 結構)
+            st.markdown(f"""
+            <div class="flashcard">
+                <div class="card-subject">{subject}</div>
+                <div class="card-question">
+            """, unsafe_allow_html=True)
 
+            # 判斷是否包含區塊數學公式 $$...$$
+            # 如果有，我們必須分割字串，分別渲染 HTML 文本和 Streamlit LaTeX
+            if '$$' in cleaned_question:
+                parts = re.split(r'(\$\$.*?\$\$)', cleaned_question, flags=re.DOTALL)
                 for part in parts:
                     if part.startswith('$$') and part.endswith('$$'):
-                        # 這是塊級公式
-                        st.latex(part[2:-2]) # 去掉前後的 $$
+                        # 這是數學公式，使用 st.latex
+                        st.latex(part.replace('$$', ''))
                     else:
-                        # 這是普通文本
-                        st.markdown(part, unsafe_allow_html=True)
-
-                st.markdown("</div></div>", unsafe_allow_html=True)
+                        # 這是普通文本，使用 markdown (不帶 unsafe_allow_html，以便解析行內數學 $)
+                        if part.strip():
+                            st.write(part)
             else:
-                # 沒有塊級公式，直接渲染
-                st.markdown(f"""
-                <div class="flashcard">
-                    <div class="card-subject">{data.get('subject')}</div>
-                    <div class="card-question">
-                        {cleaned_question}
-                    </div>
+                # 如果沒有複雜公式，直接嘗試用 write 渲染 (支援行內 $)
+                st.write(cleaned_question)
+
+            # 關閉卡片容器
+            st.markdown("""
                 </div>
-                """, unsafe_allow_html=True)
+            </div>
+            """, unsafe_allow_html=True)
+            # ---------------------------
 
             with st.expander("👁️ 翻開詳解 (Show Detail)", expanded=False):
                 st.markdown("### ✅ 詳細解析")
-                # 這裡同樣開啟 HTML 支援，顯示黃色答案
+                # 這裡保留 unsafe_allow_html=True 以支援黃色高亮
+                # 如果答案中有大量數學公式，可能也需要上述的 split 邏輯
                 st.markdown(clean_latex(data.get('answer')), unsafe_allow_html=True)
                 st.divider()
                 st.markdown("<div style='text-align: center; color: grey; margin-bottom: 10px;'>這題你覺得？</div>", unsafe_allow_html=True)
