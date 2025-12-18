@@ -102,14 +102,22 @@ def clean_latex(text):
         return placeholder
 
     # 應用保護 (先保護已有的，防止後續的 regex 操作誤傷)
-    text = re.sub(r'\$\$(.*?)\$\$', replace_display_math, text, flags=re.DOTALL)
-    text = re.sub(r'(?<!\\)\$(?!\$)(.*?)(?<!\\)\$(?!\$)', replace_inline_math, text)
+    # 注意：這裡的 regex 要非常小心，確保不匹配 \$ 或 \$\$ (轉義的美元符號)
+    # re.DOTALL 標誌讓 .*? 能匹配換行符
+    text = re.sub(r'\$\$([^\$]*?(?:\$(?!\$)[^\$]*?)*?)\$\$', replace_display_math, text, flags=re.DOTALL)
+    # 匹配不在 \$ 之間的 $...$，且不與 $$...$$ 混淆
+    # (?<!\\)\$ 表示前面不能是反斜線 \
+    # (?!\$) 表示後面不能是 $
+    # (?:\$(?!\$)[^\$]*?)*? 是一個非貪婪的匹配，處理內部可能的 \$ 情況
+    text = re.sub(r'(?<!\\)\$([^\$]*?(?:\$(?!\$)[^\$]*?)*?)(?<!\\)\$(?!\$)', replace_inline_math, text)
 
     # 2. 處理 LaTeX 的 \[...\] 和 \(...\) 格式 (將其轉換為 MathJax 格式)
-    # 處理 \[ ... \] (塊級數學)
-    text = re.sub(r'\\\[\s*(.*?)\s*\\\]', r'$$\1$$', text, flags=re.DOTALL)
-    # 處理 \( ... \) (行內數學)
+    # 處理 \( ... \) (行內數學) -> $ ... $
+    # 使用 re.DOTALL 以處理跨行的內容
     text = re.sub(r'\\\(\s*(.*?)\s*\\\)', r'$\1$', text, flags=re.DOTALL)
+    # 處理 \[ ... \] (塊級數學) -> $$ ... $$
+    text = re.sub(r'\\\[\s*(.*?)\s*\\\]', r'$$\1$$', text, flags=re.DOTALL)
+
 
     # 3. 將保護起來的數學表達式放回去
     for placeholder, original_math in math_placeholders.items():
@@ -293,7 +301,17 @@ with tab_study:
                 if "messages" not in st.session_state:
                     st.session_state.messages = []
                 for m in st.session_state.messages:
-                    st.chat_message(m["role"]).write(clean_latex(m["content"]))
+                    # 如果內容是純數學公式，可以考慮使用 st.latex()
+                    content = clean_latex(m["content"])
+                    if content.startswith('$') and content.endswith('$'):
+                        # 這是一個行內公式，使用 markdown 渲染
+                        st.chat_message(m["role"]).markdown(content)
+                    elif content.startswith('$$') and content.endswith('$$'):
+                        # 這是一個塊級公式，使用 st.latex()
+                        st.chat_message(m["role"]).latex(content[2:-2]) # 去掉前後的 $$
+                    else:
+                        # 一般文本
+                        st.chat_message(m["role"]).write(content)
 
                 if q := st.chat_input("輸入問題..."):
                     st.session_state.messages.append({"role": "user", "content": q})
@@ -303,7 +321,13 @@ with tab_study:
                         rag = f"DSE 導師。{lang_instruction}。數學公式單個 $ 包住。\n筆記：{notes[:12000]}"
                         ans = client.chat.completions.create(model="deepseek-chat", messages=[{"role":"system","content":rag},{"role":"user","content":q}]).choices[0].message.content
                         display_ans = clean_latex(ans)
-                        st.markdown(display_ans)
+                        # 判斷是否為純公式
+                        if display_ans.startswith('$') and display_ans.endswith('$'):
+                            st.latex(display_ans[1:-1]) # 去掉前後的 $
+                        elif display_ans.startswith('$$') and display_ans.endswith('$$'):
+                            st.latex(display_ans[2:-2]) # 去掉前後的 $$
+                        else:
+                            st.markdown(display_ans)
                         st.button("☁️ 加入題庫", key=f"s_{len(st.session_state.messages)}", on_click=manual_save_to_cloud, args=(current_subject, q, ans, "問答"))
 
                     st.session_state.messages.append({"role": "assistant", "content": ans})
@@ -401,14 +425,39 @@ with tab_review:
             data = card['metadata']
             mid = card['id']
 
-            st.markdown(f"""
-            <div class="flashcard">
-                <div class="card-subject">{data.get('subject')}</div>
-                <div class="card-question">
-                    {clean_latex(data.get('question'))}
+            # 提取問題中的公式部分進行渲染
+            question_text = data.get('question', '')
+            cleaned_question = clean_latex(question_text)
+
+            # 檢查是否包含塊級公式
+            if '$$' in cleaned_question:
+                # 分割文字和公式
+                parts = re.split(r'(\$\$.*?\$\$)', cleaned_question, flags=re.DOTALL)
+                st.markdown(f"""
+                <div class="flashcard">
+                    <div class="card-subject">{data.get('subject')}</div>
+                    <div class="card-question">
+                """, unsafe_allow_html=True)
+
+                for part in parts:
+                    if part.startswith('$$') and part.endswith('$$'):
+                        # 這是塊級公式
+                        st.latex(part[2:-2]) # 去掉前後的 $$
+                    else:
+                        # 這是普通文本
+                        st.markdown(part, unsafe_allow_html=True)
+
+                st.markdown("</div></div>", unsafe_allow_html=True)
+            else:
+                # 沒有塊級公式，直接渲染
+                st.markdown(f"""
+                <div class="flashcard">
+                    <div class="card-subject">{data.get('subject')}</div>
+                    <div class="card-question">
+                        {cleaned_question}
+                    </div>
                 </div>
-            </div>
-            """, unsafe_allow_html=True)
+                """, unsafe_allow_html=True)
 
             with st.expander("👁️ 翻開詳解 (Show Detail)", expanded=False):
                 st.markdown("### ✅ 詳細解析")
