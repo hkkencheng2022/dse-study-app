@@ -12,8 +12,8 @@ import re
 
 # --- 1. 頁面設定 ---
 st.set_page_config(
-    page_title="DSE 智能温習系統 (Answer Pro)", 
-    layout="wide", 
+    page_title="DSE 智能温習系統 (Answer Pro)",
+    layout="wide",
     page_icon="🇭🇰",
     initial_sidebar_state="expanded"
 )
@@ -78,15 +78,48 @@ deepseek_key = st.secrets.get("DEEPSEEK_API_KEY")
 pinecone_key = st.secrets.get("PINECONE_API_KEY")
 
 # --- 4. 核心函數 ---
-
 def clean_latex(text):
-    if not text: return ""
-    # 修復 LaTeX 格式
-    text = re.sub(r'\\\[(.*?)\\\]', r'$$\1$$', text, flags=re.DOTALL)
-    text = re.sub(r'\\\((.*?)\\\)', r'$\1$', text, flags=re.DOTALL)
+    """修正 LaTeX 格式為 MathJax 格式，避免破壞已有的 $...$ 或 $$...$$，並處理 HTML 標籤。"""
+    if not text or not isinstance(text, str):
+        return text
+
+    # 1. 保護已有的 MathJax 格式 ($...$ 或 $$...$$)，先替換為特殊標記
+    math_placeholders = {}
+    counter = 0
+
+    def replace_inline_math(match):
+        nonlocal counter
+        placeholder = f"__MATH_INLINE_{counter}__"
+        math_placeholders[placeholder] = match.group(0)
+        counter += 1
+        return placeholder
+
+    def replace_display_math(match):
+        nonlocal counter
+        placeholder = f"__MATH_DISPLAY_{counter}__"
+        math_placeholders[placeholder] = match.group(0)
+        counter += 1
+        return placeholder
+
+    # 應用保護
+    text = re.sub(r'\$\$(.*?)\$\$', replace_display_math, text, flags=re.DOTALL)
+    text = re.sub(r'(?<!\\)\$(?!\$)(.*?)(?<!\\)\$(?!\$)', replace_inline_math, text)
+
+    # 2. 處理 LaTeX 的 \[...\] 和 \(...\) 格式
+    # 修復 \[...\] (display math)
+    text = re.sub(r'\\\[\s*(.*?)\s*\\\]', r'$$\1$$', text, flags=re.DOTALL)
+    # 修復 \(...\) (inline math)
+    text = re.sub(r'\\\(\s*(.*?)\s*\\\)', r'$\1$', text, flags=re.DOTALL)
+
+    # 3. 將保護起來的數學表達式放回去
+    for placeholder, original_math in math_placeholders.items():
+        text = text.replace(placeholder, original_math)
+
     return text
 
+
 def manual_save_to_cloud(subject, question, answer, note_type):
+    global index # Assuming 'index' is defined globally after Pinecone initialization
     if not index:
         st.error("❌ 未連接 Pinecone")
         return
@@ -108,6 +141,7 @@ def manual_save_to_cloud(subject, question, answer, note_type):
         st.error(f"上傳失敗: {e}")
 
 def update_weight(item_id, rating):
+    global index # Assuming 'index' is defined globally after Pinecone initialization
     if not index: return
     new_weight = 20.0
     msg = ""
@@ -120,7 +154,6 @@ def update_weight(item_id, rating):
     elif rating == 3:
         new_weight = 1.0
         msg = "✅ 標記：已掌握"
-    
     try:
         index.update(id=item_id, set_metadata={"weight": new_weight})
         st.toast(msg, icon="⚡")
@@ -130,6 +163,7 @@ def update_weight(item_id, rating):
         st.error(f"更新失敗: {e}")
 
 def delete_from_cloud(item_id):
+    global index # Assuming 'index' is defined globally after Pinecone initialization
     if not index: return
     try:
         index.delete(ids=[item_id])
@@ -137,7 +171,7 @@ def delete_from_cloud(item_id):
         if 'current_card_data' in st.session_state:
             del st.session_state['current_card_data']
         if 'card_pool' in st.session_state:
-            del st.session_state['card_pool'] 
+            del st.session_state['card_pool']
     except Exception as e:
         st.error(f"刪除失敗: {e}")
 
@@ -201,7 +235,18 @@ with tab_factory:
     c1, c2 = st.columns(2)
     with c1:
         st.subheader("1. 獲取指令")
-        prompt_text = f"""(請上傳 PDF/圖片) 你是一位 DSE {current_subject} 編輯..."""
+        # 使用您提供的新 PROMPT
+        prompt_text = f"""(請上傳附件 PDF/圖片)
+你是一位香港 DSE {current_subject} 的專業教材編輯。
+請閱讀我上傳的文件，並將其整理為一份「結構清晰」的 Markdown 筆記。
+
+要求：
+1. 【去蕪存菁】：去除頁碼、廣告、重複的考試規則。
+2. 【結構化】：按課題 (Topic) 使用 # 和 ## 標題分類。
+3. 【關鍵詞】：保留所有 DSE 專用術語 (Keywords)，不要過度簡化。
+4. 【題目】：如果內容包含題目與答案，請整理為 Q: ... A: ... 格式。
+5. 【輸出】：直接輸出整理後的內容，不需要開場白。
+"""
         st.text_area("預覽", prompt_text, height=150)
         copy_button_component(prompt_text)
         st.link_button("🔗 前往 DeepSeek", "https://chat.deepseek.com", type="primary")
@@ -221,30 +266,36 @@ with tab_study:
     with c_in:
         method = st.radio("來源", ["📂 上傳", "📋 貼上"], horizontal=True)
         notes = ""
-        if method == "📋 貼上": notes = st.text_area("貼上筆記：", height=300)
+        if method == "📋 貼上":
+            notes = st.text_area("貼上筆記：", height=300)
         else:
             files = st.file_uploader("上傳 .txt", type=["txt"], accept_multiple_files=True)
             if files:
-                for f in files: notes += f"\n---\n{f.read().decode('utf-8')}"
+                for f in files:
+                    notes += f"\n---\n{f.read().decode('utf-8')}"
+
         audio = st.file_uploader("音檔", type=["mp3"])
     with c_main:
-        if not notes: st.info("👈 請先載入筆記")
+        if not notes:
+            st.info("👈 請先載入筆記")
         else:
-            if not client: st.error("缺 API Key"); st.stop()
+            if not client:
+                st.error("缺 API Key")
+                st.stop()
             s1, s2, s3 = st.tabs(["🎧 聽書", "💬 問答", "✍️ 模擬卷 (Answer Pro)"])
-            
             with s1:
-                if audio: st.audio(audio)
-                with st.expander("筆記"): st.markdown(notes)
-            
+                if audio:
+                    st.audio(audio)
+                with st.expander("筆記"):
+                    st.markdown(notes)
             with s2:
                 default_lang_idx = 1 if current_subject == "English" else 0
                 lang_choice = st.radio("回答語言", ["中文 (廣東話)", "English"], index=default_lang_idx, horizontal=True)
-
-                if "messages" not in st.session_state: st.session_state.messages = []
-                for m in st.session_state.messages: 
+                if "messages" not in st.session_state:
+                    st.session_state.messages = []
+                for m in st.session_state.messages:
                     st.chat_message(m["role"]).write(clean_latex(m["content"]))
-                
+
                 if q := st.chat_input("輸入問題..."):
                     st.session_state.messages.append({"role": "user", "content": q})
                     st.chat_message("user").write(q)
@@ -252,12 +303,11 @@ with tab_study:
                         lang_instruction = "用廣東話回答" if lang_choice == "中文 (廣東話)" else "Answer in English"
                         rag = f"DSE 導師。{lang_instruction}。數學公式單個 $ 包住。\n筆記：{notes[:12000]}"
                         ans = client.chat.completions.create(model="deepseek-chat", messages=[{"role":"system","content":rag},{"role":"user","content":q}]).choices[0].message.content
-                        
                         display_ans = clean_latex(ans)
                         st.markdown(display_ans)
                         st.button("☁️ 加入題庫", key=f"s_{len(st.session_state.messages)}", on_click=manual_save_to_cloud, args=(current_subject, q, ans, "問答"))
+
                     st.session_state.messages.append({"role": "assistant", "content": ans})
-            
             # --- [重點修改] Tab 2 Sub 3: 模擬卷 Prompt ---
             with s3:
                 st.subheader("設定出題參數")
@@ -267,48 +317,38 @@ with tab_study:
                 with c2: qt = st.radio("題型", ["MC","LQ"], horizontal=True)
                 with c3: num = st.number_input("數量", 1, 10, 1)
                 with c4: lang = st.selectbox("語言", ["中文 (繁體)", "English"], index=default_idx)
-
                 if st.button("🚀 生成題目"):
                     # 升級版 Prompt
                     prompt = f"""
                     角色：香港考評局 DSE {current_subject} 出卷員。
                     語言：請使用 **{lang}**。
                     任務：根據筆記，設計 **{num} 條** {diff} 程度的 {qt}。
-                    
                     【極重要格式指令】：
                     1. **題目/答案分離**：先列出「試題卷 (Questions)」，插入 `<<<SPLIT>>>`，再列出「答案與詳解 (Marking Scheme)」。
-                    
                     2. **MC 選項格式**：必須 **垂直分行**。
                        正確範例：
                        A. 選項一
                        B. 選項二
-                    
                     3. **答案格式 (Highlight & Explanation)**：
                        - 必須提供 **【詳細解釋 (Explanation)】**，分析為何該答案正確，以及其他選項為何錯誤。
                        - **正確答案的關鍵字或選項** 必須使用 HTML 黃色高亮語法包住：
                          請使用: `<span class="highlight-answer">正確答案</span>`
                        - 例子：答案是 <span class="highlight-answer">A</span>。因為...
-                    
                     4. **數學公式**：必須用單個 $ 包住 (例如 $x^2$)。
-                    
                     筆記內容：{notes[:7000]}
                     """
-                    
                     res = client.chat.completions.create(model="deepseek-chat", messages=[{"role":"user","content":prompt}]).choices[0].message.content
-                    
                     q_p, a_p = res.split("<<<SPLIT>>>") if "<<<SPLIT>>>" in res else (res, "AI 未能自動分離答案，請見上方。")
                     st.session_state['q'] = {"q": q_p, "a": a_p}
-                
+
                 if 'q' in st.session_state:
                     quiz = st.session_state['q']
                     st.markdown("### 📝 試題")
                     st.markdown(clean_latex(quiz['q']))
-                    
                     st.info("👇 完成作答後，點擊下方查看詳解")
-                    with st.expander("🔐 查看答案與詳細解釋 (Marking Scheme)"): 
+                    with st.expander("🔐 查看答案與詳細解釋 (Marking Scheme)"):
                         # 使用 unsafe_allow_html=True 讓黃色高亮生效
                         st.markdown(clean_latex(quiz['a']), unsafe_allow_html=True)
-                        
                     st.button("☁️ 加入題庫", key="sq", on_click=manual_save_to_cloud, args=(current_subject, quiz['q'], quiz['a'], "模擬卷"))
 
 # ==========================================
@@ -319,11 +359,13 @@ with tab_review:
     with c_title: st.subheader("🧠 抽卡溫習")
     with c_act: st.button("⏭️ 下一張", on_click=skip_card, type="primary", use_container_width=True)
 
-    if not index: st.warning("⚠️ 請先設定 Pinecone Key"); st.stop()
+    if not index:
+        st.warning("⚠️ 請先設定 Pinecone Key")
+        st.stop()
 
     c_filt, c_space = st.columns([2, 3])
     with c_filt: f_sub = st.selectbox("📂 選擇學科", ["顯示全部", "Biology", "Chemistry", "Economics", "Chinese", "English", "History", "Maths"])
-    
+
     if 'last_filter' not in st.session_state: st.session_state.last_filter = f_sub
     if st.session_state.last_filter != f_sub:
         if 'card_pool' in st.session_state: del st.session_state['card_pool']
@@ -339,7 +381,7 @@ with tab_review:
             with st.spinner(f"載入題庫..."):
                 res = index.query(vector=dummy, top_k=top_k_count, include_metadata=True, filter=meta_filter)
                 st.session_state['card_pool'] = res['matches']
-        
+
         pool = st.session_state['card_pool']
 
         if not pool:
@@ -348,7 +390,6 @@ with tab_review:
             if 'current_card_data' not in st.session_state:
                 weights = [float(m['metadata'].get('weight', 20.0)) for m in pool]
                 chosen_card = random.choices(pool, weights=weights, k=1)[0]
-                
                 if len(pool) > 1 and 'previous_card_id' in st.session_state:
                     prev_id = st.session_state['previous_card_id']
                     retry = 0
@@ -360,7 +401,7 @@ with tab_review:
             card = st.session_state['current_card_data']
             data = card['metadata']
             mid = card['id']
-            
+
             st.markdown(f"""
             <div class="flashcard">
                 <div class="card-subject">{data.get('subject')}</div>
@@ -374,10 +415,8 @@ with tab_review:
                 st.markdown("### ✅ 詳細解析")
                 # 這裡同樣開啟 HTML 支援，顯示黃色答案
                 st.markdown(clean_latex(data.get('answer')), unsafe_allow_html=True)
-                
                 st.divider()
                 st.markdown("<div style='text-align: center; color: grey; margin-bottom: 10px;'>這題你覺得？</div>", unsafe_allow_html=True)
-                
                 _, col_btns, _ = st.columns([1, 4, 1])
                 with col_btns:
                     b1, b2, b3, b_del = st.columns([1, 1, 1, 0.5])
