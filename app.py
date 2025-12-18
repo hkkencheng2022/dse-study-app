@@ -79,7 +79,7 @@ pinecone_key = st.secrets.get("PINECONE_API_KEY")
 
 # --- 4. 核心函數 ---
 def clean_latex(text):
-    """修正 LaTeX 格式為 MathJax 格式，避免破壞已有的 $...$ 或 $$...$$，並處理 HTML 標籤。"""
+    """修正 LaTeX 格式為 MathJax 格式，避免破壞已有的 $...$ 或 $$...$$。"""
     if not text or not isinstance(text, str):
         return text
 
@@ -101,14 +101,14 @@ def clean_latex(text):
         counter += 1
         return placeholder
 
-    # 應用保護
+    # 應用保護 (先保護已有的，防止後續的 regex 操作誤傷)
     text = re.sub(r'\$\$(.*?)\$\$', replace_display_math, text, flags=re.DOTALL)
     text = re.sub(r'(?<!\\)\$(?!\$)(.*?)(?<!\\)\$(?!\$)', replace_inline_math, text)
 
-    # 2. 處理 LaTeX 的 \[...\] 和 \(...\) 格式
-    # 修復 \[...\] (display math)
+    # 2. 處理 LaTeX 的 \[...\] 和 \(...\) 格式 (將其轉換為 MathJax 格式)
+    # 處理 \[ ... \] (塊級數學)
     text = re.sub(r'\\\[\s*(.*?)\s*\\\]', r'$$\1$$', text, flags=re.DOTALL)
-    # 修復 \(...\) (inline math)
+    # 處理 \( ... \) (行內數學)
     text = re.sub(r'\\\(\s*(.*?)\s*\\\)', r'$\1$', text, flags=re.DOTALL)
 
     # 3. 將保護起來的數學表達式放回去
@@ -235,7 +235,6 @@ with tab_factory:
     c1, c2 = st.columns(2)
     with c1:
         st.subheader("1. 獲取指令")
-        # 使用您提供的新 PROMPT
         prompt_text = f"""(請上傳附件 PDF/圖片)
 你是一位香港 DSE {current_subject} 的專業教材編輯。
 請閱讀我上傳的文件，並將其整理為一份「結構清晰」的 Markdown 筆記。
