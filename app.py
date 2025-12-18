@@ -12,13 +12,13 @@ import re
 
 # --- 1. 頁面設定 ---
 st.set_page_config(
-    page_title="DSE 智能温習系統 (Detailed Ans)", 
+    page_title="DSE 智能温習系統 (Answer Pro)", 
     layout="wide", 
     page_icon="🇭🇰",
     initial_sidebar_state="expanded"
 )
 
-# 注入 CSS (卡片風格)
+# 注入 CSS (卡片風格 + 黃色高亮支援)
 st.markdown("""
 <style>
     .flashcard {
@@ -31,10 +31,33 @@ st.markdown("""
         text-align: center;
         transition: transform 0.2s;
     }
-    .flashcard:hover { transform: translateY(-2px); box-shadow: 0 6px 16px rgba(0,0,0,0.1); }
-    .card-subject { font-size: 0.85em; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 15px; }
-    .card-question { font-size: 1.4em; font-weight: 500; color: #333; line-height: 1.6; margin-bottom: 20px; }
-    .stButton button { border-radius: 20px !important; font-weight: bold !important; }
+    .flashcard:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 16px rgba(0,0,0,0.1);
+    }
+    .card-subject {
+        font-size: 0.85em;
+        font-weight: 600;
+        color: #888;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        margin-bottom: 15px;
+    }
+    .card-question {
+        font-size: 1.4em;
+        font-weight: 500;
+        color: #333;
+        line-height: 1.6;
+        margin-bottom: 20px;
+    }
+    /* 自定義黃色高亮樣式 (讓 AI 呼叫) */
+    .highlight-answer {
+        color: #D4AC0D; /* 深金色，確保白底可讀 */
+        font-weight: bold;
+        background-color: #FFF9C4; /* 淡黃底色增加對比 */
+        padding: 2px 6px;
+        border-radius: 4px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -58,6 +81,7 @@ pinecone_key = st.secrets.get("PINECONE_API_KEY")
 
 def clean_latex(text):
     if not text: return ""
+    # 修復 LaTeX 格式
     text = re.sub(r'\\\[(.*?)\\\]', r'$$\1$$', text, flags=re.DOTALL)
     text = re.sub(r'\\\((.*?)\\\)', r'$\1$', text, flags=re.DOTALL)
     return text
@@ -87,14 +111,21 @@ def update_weight(item_id, rating):
     if not index: return
     new_weight = 20.0
     msg = ""
-    if rating == 1: new_weight = 20.0; msg = "⭕ 標記：需重溫"
-    elif rating == 2: new_weight = 5.0; msg = "⚠️ 標記：有點印象"
-    elif rating == 3: new_weight = 1.0; msg = "✅ 標記：已掌握"
+    if rating == 1:
+        new_weight = 20.0
+        msg = "⭕ 標記：需重溫"
+    elif rating == 2:
+        new_weight = 5.0
+        msg = "⚠️ 標記：有點印象"
+    elif rating == 3:
+        new_weight = 1.0
+        msg = "✅ 標記：已掌握"
     
     try:
         index.update(id=item_id, set_metadata={"weight": new_weight})
         st.toast(msg, icon="⚡")
-        if 'current_card_data' in st.session_state: del st.session_state['current_card_data']
+        if 'current_card_data' in st.session_state:
+            del st.session_state['current_card_data']
     except Exception as e:
         st.error(f"更新失敗: {e}")
 
@@ -103,8 +134,10 @@ def delete_from_cloud(item_id):
     try:
         index.delete(ids=[item_id])
         st.toast("🗑️ 已刪除", icon="✅")
-        if 'current_card_data' in st.session_state: del st.session_state['current_card_data']
-        if 'card_pool' in st.session_state: del st.session_state['card_pool']
+        if 'current_card_data' in st.session_state:
+            del st.session_state['current_card_data']
+        if 'card_pool' in st.session_state:
+            del st.session_state['card_pool'] 
     except Exception as e:
         st.error(f"刪除失敗: {e}")
 
@@ -116,15 +149,30 @@ def skip_card():
 def copy_button_component(text_to_copy):
     js_text = json.dumps(text_to_copy)
     components.html(
-        f"""<script>function copy(){{navigator.clipboard.writeText({js_text});}}</script>
-        <button onclick="copy()" style="width:100%;background:#FF4B4B;color:white;border:none;padding:12px;border-radius:8px;cursor:pointer;font-weight:bold;">📋 點擊複製所有指令</button>
+        f"""
+        <script>
+        function copyToClipboard() {{
+            const str = {js_text};
+            const el = document.createElement('textarea');
+            el.value = str;
+            document.body.appendChild(el);
+            el.select();
+            document.execCommand('copy');
+            document.body.removeChild(el);
+            const btn = document.getElementById('copyBtn');
+            btn.innerText = "✅ 複製成功！";
+            btn.style.backgroundColor = "#4CAF50";
+            setTimeout(() => {{ btn.innerText = "📋 點擊複製所有指令"; btn.style.backgroundColor = "#FF4B4B"; }}, 2000);
+        }}
+        </script>
+        <button id="copyBtn" onclick="copyToClipboard()" style="width: 100%; background-color: #FF4B4B; color: white; border: none; padding: 12px 20px; border-radius: 8px; cursor: pointer; font-weight: bold; font-size: 16px;">📋 點擊複製所有指令</button>
         """, height=60
     )
 
 # --- 5. 側邊欄 ---
 with st.sidebar:
     st.title("🇭🇰 DSE 備戰中心")
-    st.caption("詳細解釋版 (Detailed Explanations)")
+    st.caption("Detailed Answer Mode")
     st.divider()
     if not deepseek_key: deepseek_key = st.text_input("DeepSeek Key", type="password")
     if not pinecone_key: pinecone_key = st.text_input("Pinecone Key", type="password")
@@ -165,7 +213,7 @@ with tab_factory:
                 st.download_button("📥 下載", txt, f"{current_subject}_Notes.txt")
 
 # ==========================================
-# TAB 2: 智能溫習 (重點優化：詳細解釋)
+# TAB 2: 智能溫習 (Prompt 重點升級)
 # ==========================================
 with tab_study:
     st.header(f"🎓 {current_subject} - 衝刺模式")
@@ -183,7 +231,7 @@ with tab_study:
         if not notes: st.info("👈 請先載入筆記")
         else:
             if not client: st.error("缺 API Key"); st.stop()
-            s1, s2, s3 = st.tabs(["🎧 聽書", "💬 問答", "✍️ 模擬卷 (詳細版)"])
+            s1, s2, s3 = st.tabs(["🎧 聽書", "💬 問答", "✍️ 模擬卷 (Answer Pro)"])
             
             with s1:
                 if audio: st.audio(audio)
@@ -204,51 +252,63 @@ with tab_study:
                         lang_instruction = "用廣東話回答" if lang_choice == "中文 (廣東話)" else "Answer in English"
                         rag = f"DSE 導師。{lang_instruction}。數學公式單個 $ 包住。\n筆記：{notes[:12000]}"
                         ans = client.chat.completions.create(model="deepseek-chat", messages=[{"role":"system","content":rag},{"role":"user","content":q}]).choices[0].message.content
+                        
                         display_ans = clean_latex(ans)
                         st.markdown(display_ans)
                         st.button("☁️ 加入題庫", key=f"s_{len(st.session_state.messages)}", on_click=manual_save_to_cloud, args=(current_subject, q, ans, "問答"))
                     st.session_state.messages.append({"role": "assistant", "content": ans})
             
+            # --- [重點修改] Tab 2 Sub 3: 模擬卷 Prompt ---
             with s3:
-                st.subheader("設定出題參數 (含詳細解釋)")
+                st.subheader("設定出題參數")
                 default_idx = 1 if current_subject == "English" else 0
                 c1,c2,c3,c4 = st.columns([2,2,1,2])
                 with c1: diff = st.select_slider("難度", ["L3","L4","L5","L5**"], "L4")
                 with c2: qt = st.radio("題型", ["MC","LQ"], horizontal=True)
                 with c3: num = st.number_input("數量", 1, 10, 1)
-                with c4: lang = st.selectbox("題目語言", ["中文 (繁體)", "English"], index=default_idx)
+                with c4: lang = st.selectbox("語言", ["中文 (繁體)", "English"], index=default_idx)
 
-                if st.button("🚀 生成詳細題目"):
-                    # [重點修改] Prompt 加入「詳細解釋」的要求
+                if st.button("🚀 生成題目"):
+                    # 升級版 Prompt
                     prompt = f"""
-                    DSE 出卷員。
-                    請用 **{lang}** 出 {num} 條 {diff} {qt}。
+                    角色：香港考評局 DSE {current_subject} 出卷員。
+                    語言：請使用 **{lang}**。
+                    任務：根據筆記，設計 **{num} 條** {diff} 程度的 {qt}。
                     
-                    【輸出格式嚴格要求】：
-                    1. 先列出「試題卷 (Questions)」，題目中嚴禁包含答案。
-                    2. 插入分隔符號 `<<<SPLIT>>>`。
-                    3. 最後列出「答案與詳解 (Marking Scheme & Detailed Explanation)」。
+                    【極重要格式指令】：
+                    1. **題目/答案分離**：先列出「試題卷 (Questions)」，插入 `<<<SPLIT>>>`，再列出「答案與詳解 (Marking Scheme)」。
                     
-                    【內容要求】：
-                    - **MC 題**：選項 (A, B, C, D) 必須垂直分行。
-                    - **數學**：公式用單個 $ 包住 (例如 $x^2$)。
-                    - **詳解 (重要)**：
-                        - 若是 MC，**必須逐一解釋** 為何正確選項是對的，以及 **為何其他選項是錯的** (解釋陷阱位)。
-                        - 若是 LQ，請列出計分步驟 (Steps) 及完整概念解說。
+                    2. **MC 選項格式**：必須 **垂直分行**。
+                       正確範例：
+                       A. 選項一
+                       B. 選項二
                     
-                    筆記：{notes[:6000]}
+                    3. **答案格式 (Highlight & Explanation)**：
+                       - 必須提供 **【詳細解釋 (Explanation)】**，分析為何該答案正確，以及其他選項為何錯誤。
+                       - **正確答案的關鍵字或選項** 必須使用 HTML 黃色高亮語法包住：
+                         請使用: `<span class="highlight-answer">正確答案</span>`
+                       - 例子：答案是 <span class="highlight-answer">A</span>。因為...
+                    
+                    4. **數學公式**：必須用單個 $ 包住 (例如 $x^2$)。
+                    
+                    筆記內容：{notes[:7000]}
                     """
                     
                     res = client.chat.completions.create(model="deepseek-chat", messages=[{"role":"user","content":prompt}]).choices[0].message.content
-                    q_p, a_p = res.split("<<<SPLIT>>>") if "<<<SPLIT>>>" in res else (res, "AI 未能自動分離，請見上方。")
+                    
+                    q_p, a_p = res.split("<<<SPLIT>>>") if "<<<SPLIT>>>" in res else (res, "AI 未能自動分離答案，請見上方。")
                     st.session_state['q'] = {"q": q_p, "a": a_p}
                 
                 if 'q' in st.session_state:
                     quiz = st.session_state['q']
-                    st.markdown("### 試題")
+                    st.markdown("### 📝 試題")
                     st.markdown(clean_latex(quiz['q']))
-                    with st.expander("🔐 查看答案與詳細解說 (Detailed Explanation)"): 
-                        st.markdown(clean_latex(quiz['a']))
+                    
+                    st.info("👇 完成作答後，點擊下方查看詳解")
+                    with st.expander("🔐 查看答案與詳細解釋 (Marking Scheme)"): 
+                        # 使用 unsafe_allow_html=True 讓黃色高亮生效
+                        st.markdown(clean_latex(quiz['a']), unsafe_allow_html=True)
+                        
                     st.button("☁️ 加入題庫", key="sq", on_click=manual_save_to_cloud, args=(current_subject, quiz['q'], quiz['a'], "模擬卷"))
 
 # ==========================================
@@ -256,7 +316,7 @@ with tab_study:
 # ==========================================
 with tab_review:
     c_title, c_act = st.columns([4, 1])
-    with c_title: st.subheader("🧠 抽卡溫習 (NotebookLM Style)")
+    with c_title: st.subheader("🧠 抽卡溫習")
     with c_act: st.button("⏭️ 下一張", on_click=skip_card, type="primary", use_container_width=True)
 
     if not index: st.warning("⚠️ 請先設定 Pinecone Key"); st.stop()
@@ -288,6 +348,7 @@ with tab_review:
             if 'current_card_data' not in st.session_state:
                 weights = [float(m['metadata'].get('weight', 20.0)) for m in pool]
                 chosen_card = random.choices(pool, weights=weights, k=1)[0]
+                
                 if len(pool) > 1 and 'previous_card_id' in st.session_state:
                     prev_id = st.session_state['previous_card_id']
                     retry = 0
@@ -303,15 +364,20 @@ with tab_review:
             st.markdown(f"""
             <div class="flashcard">
                 <div class="card-subject">{data.get('subject')}</div>
-                <div class="card-question">{clean_latex(data.get('question'))}</div>
+                <div class="card-question">
+                    {clean_latex(data.get('question'))}
+                </div>
             </div>
             """, unsafe_allow_html=True)
 
-            with st.expander("👁️ 翻開答案 (Show Answer)", expanded=False):
-                st.markdown("### ✅ 解析")
-                st.markdown(clean_latex(data.get('answer')))
+            with st.expander("👁️ 翻開詳解 (Show Detail)", expanded=False):
+                st.markdown("### ✅ 詳細解析")
+                # 這裡同樣開啟 HTML 支援，顯示黃色答案
+                st.markdown(clean_latex(data.get('answer')), unsafe_allow_html=True)
+                
                 st.divider()
                 st.markdown("<div style='text-align: center; color: grey; margin-bottom: 10px;'>這題你覺得？</div>", unsafe_allow_html=True)
+                
                 _, col_btns, _ = st.columns([1, 4, 1])
                 with col_btns:
                     b1, b2, b3, b_del = st.columns([1, 1, 1, 0.5])
