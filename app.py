@@ -202,7 +202,7 @@ if pinecone_key:
 tab_factory, tab_study, tab_review = st.tabs(["🏭 資料清洗", "🎓 智能溫習", "🧠 抽卡溫習"])
 
 # ==========================================
-# TAB 1: 資料清洗 (已修正下載按鈕問題)
+# TAB 1: 資料清洗
 # ==========================================
 with tab_factory:
     st.header(f"🚀 {current_subject} - 資料清洗")
@@ -225,42 +225,67 @@ with tab_factory:
         st.link_button("🔗 前往 DeepSeek", "https://chat.deepseek.com", type="primary")
     with c2:
         st.subheader("2. 備份")
-        # --- 修正: 移除 st.form，因為 st.download_button 不支援在 form 內 ---
         txt = st.text_area("貼上內容...", height=250)
         if txt:
              st.download_button("💾 下載 .txt", txt, file_name=f"{current_subject}_Notes.txt", mime="text/plain")
 
 # ==========================================
-# TAB 2: 智能溫習
+# TAB 2: 智能溫習 (已更新上傳邏輯)
 # ==========================================
 with tab_study:
     st.header(f"🎓 {current_subject} - 衝刺模式")
     c_in, c_main = st.columns([1, 2])
+    
+    # 初始化變數
+    notes = ""
+    audio = None
+    
     with c_in:
-        method = st.radio("來源", ["📂 上傳", "📋 貼上"], horizontal=True)
-        notes = ""
-        if method == "📋 貼上":
+        method = st.radio("來源", ["📂 上傳檔案", "📋 貼上文字"], horizontal=True)
+        
+        if method == "📋 貼上文字":
             notes = st.text_area("貼上筆記：", height=300)
         else:
-            files = st.file_uploader("上傳 .txt", type=["txt"], accept_multiple_files=True)
+            # 允許任何類型，移除 type 限制，合併音檔功能
+            files = st.file_uploader("上傳筆記或音檔 (支援所有類型)", accept_multiple_files=True)
             if files:
                 for f in files:
-                    notes += f"\n---\n{f.read().decode('utf-8')}"
+                    fname = f.name.lower()
+                    # 判斷是否為音訊檔案
+                    if fname.endswith(('.mp3', '.wav', '.m4a', '.ogg', '.aac')):
+                        audio = f
+                        st.caption(f"🎵 已識別音檔：{f.name}")
+                    else:
+                        # 嘗試讀取為文字 (TXT, MD, PY, CSV 等)
+                        try:
+                            content = f.read().decode('utf-8')
+                            notes += f"\n---\n【檔案：{f.name}】\n{content}"
+                        except UnicodeDecodeError:
+                            # 如果無法解碼 (例如 PDF, Word, Image)，給予提示
+                            st.toast(f"⚠️ 無法直接讀取內容: {f.name} (請確認是否為純文字檔)", icon="🚫")
 
-        audio = st.file_uploader("音檔", type=["mp3"])
     with c_main:
-        if not notes:
-            st.info("👈 請先載入筆記")
+        # 檢查是否有內容 (文字筆記 或 音檔 都可以觸發顯示)
+        if not notes and not audio:
+            st.info("👈 請先載入筆記或音檔")
         else:
             if not client:
                 st.error("缺 API Key")
                 st.stop()
-            s1, s2, s3 = st.tabs(["🎧 聽書", "💬 問答", "✍️ 模擬卷 (Answer Pro)"])
+            
+            s1, s2, s3 = st.tabs(["🎧 聽書 / 筆記", "💬 問答", "✍️ 模擬卷 (Answer Pro)"])
+            
             with s1:
                 if audio:
+                    st.markdown("### 🎧 播放音檔")
                     st.audio(audio)
-                with st.expander("筆記"):
-                    st.markdown(notes)
+                
+                if notes:
+                    with st.expander("📄 查看已讀取筆記內容", expanded=True):
+                        st.markdown(notes)
+                elif not notes and audio:
+                    st.info("僅有音檔，無文字筆記內容。")
+
             with s2:
                 default_lang_idx = 1 if current_subject == "English" else 0
                 lang_choice = st.radio("回答語言", ["中文 (廣東話)", "English"], index=default_lang_idx, horizontal=True)
@@ -277,8 +302,11 @@ with tab_study:
                     st.session_state.messages.append({"role": "user", "content": q})
                     st.chat_message("user").write(q)
                     with st.chat_message("assistant"):
+                        # 如果沒有筆記，但用戶想問問題，避免報錯，給個預設值
+                        context_notes = notes if notes else "（無筆記內容，請依常識回答）"
+                        
                         lang_instruction = "用廣東話回答" if lang_choice == "中文 (廣東話)" else "Answer in English"
-                        rag = f"DSE 導師。{lang_instruction}。數學公式單個 $ 包住。\n筆記：{notes[:12000]}"
+                        rag = f"DSE 導師。{lang_instruction}。數學公式單個 $ 包住。\n筆記：{context_notes[:12000]}"
                         ans = client.chat.completions.create(model="deepseek-chat", messages=[{"role":"system","content":rag},{"role":"user","content":q}]).choices[0].message.content
                         display_ans = clean_latex(ans)
                         
@@ -304,26 +332,30 @@ with tab_study:
                 with c2: qt = st.radio("題型", ["MC","LQ"], horizontal=True)
                 with c3: num = st.number_input("數量", 1, 10, 1)
                 with c4: lang = st.selectbox("語言", ["中文 (繁體)", "English"], index=default_idx)
+                
                 if st.button("🚀 生成題目"):
-                    prompt = f"""
-                    角色：香港考評局 DSE {current_subject} 出卷員。
-                    語言：請使用 **{lang}**。
-                    任務：根據筆記，設計 **{num} 條** {diff} 程度的 {qt}。
-                    【極重要格式指令】：
-                    1. **題目/答案分離**：先列出「試題卷 (Questions)」，插入 `<<<SPLIT>>>`，再列出「答案與詳解 (Marking Scheme)」。
-                    2. **MC 選項格式**：必須 **垂直分行**。
-                    3. **答案格式 (Highlight & Explanation)**：
-                       - 必須提供 **【詳細解釋 (Explanation)】**。
-                       - **正確答案的關鍵字或選項** 必須使用 HTML 黃色高亮語法包住：
-                         請使用: `<span class="highlight-answer">正確答案</span>`
-                    4. **數學公式**：
-                       - 行內公式用單個 $ 包住 (例如 $x^2$)。
-                       - 獨立公式用兩個 $$ 包住。
-                    筆記內容：{notes[:7000]}
-                    """
-                    res = client.chat.completions.create(model="deepseek-chat", messages=[{"role":"user","content":prompt}]).choices[0].message.content
-                    q_p, a_p = res.split("<<<SPLIT>>>") if "<<<SPLIT>>>" in res else (res, "AI 未能自動分離答案，請見上方。")
-                    st.session_state['q'] = {"q": q_p, "a": a_p}
+                    if not notes:
+                        st.error("❌ 必須先提供【文字筆記】才能生成題目 (僅有音檔無法生成)")
+                    else:
+                        prompt = f"""
+                        角色：香港考評局 DSE {current_subject} 出卷員。
+                        語言：請使用 **{lang}**。
+                        任務：根據筆記，設計 **{num} 條** {diff} 程度的 {qt}。
+                        【極重要格式指令】：
+                        1. **題目/答案分離**：先列出「試題卷 (Questions)」，插入 `<<<SPLIT>>>`，再列出「答案與詳解 (Marking Scheme)」。
+                        2. **MC 選項格式**：必須 **垂直分行**。
+                        3. **答案格式 (Highlight & Explanation)**：
+                           - 必須提供 **【詳細解釋 (Explanation)】**。
+                           - **正確答案的關鍵字或選項** 必須使用 HTML 黃色高亮語法包住：
+                             請使用: `<span class="highlight-answer">正確答案</span>`
+                        4. **數學公式**：
+                           - 行內公式用單個 $ 包住 (例如 $x^2$)。
+                           - 獨立公式用兩個 $$ 包住。
+                        筆記內容：{notes[:7000]}
+                        """
+                        res = client.chat.completions.create(model="deepseek-chat", messages=[{"role":"user","content":prompt}]).choices[0].message.content
+                        q_p, a_p = res.split("<<<SPLIT>>>") if "<<<SPLIT>>>" in res else (res, "AI 未能自動分離答案，請見上方。")
+                        st.session_state['q'] = {"q": q_p, "a": a_p}
 
                 if 'q' in st.session_state:
                     quiz = st.session_state['q']
