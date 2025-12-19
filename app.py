@@ -230,7 +230,7 @@ with tab_factory:
              st.download_button("💾 下載 .txt", txt, file_name=f"{current_subject}_Notes.txt", mime="text/plain")
 
 # ==========================================
-# TAB 2: 智能溫習 (已更新上傳邏輯)
+# TAB 2: 智能溫習 (已增強檔案讀取功能)
 # ==========================================
 with tab_study:
     st.header(f"🎓 {current_subject} - 衝刺模式")
@@ -246,23 +246,41 @@ with tab_study:
         if method == "📋 貼上文字":
             notes = st.text_area("貼上筆記：", height=300)
         else:
-            # 允許任何類型，移除 type 限制，合併音檔功能
-            files = st.file_uploader("上傳筆記或音檔 (支援所有類型)", accept_multiple_files=True)
+            files = st.file_uploader("上傳筆記 (.txt) 或音檔", accept_multiple_files=True)
             if files:
                 for f in files:
                     fname = f.name.lower()
-                    # 判斷是否為音訊檔案
+                    
+                    # 1. 處理音檔
                     if fname.endswith(('.mp3', '.wav', '.m4a', '.ogg', '.aac')):
                         audio = f
                         st.caption(f"🎵 已識別音檔：{f.name}")
+                    
+                    # 2. 處理 PDF/DOCX/圖片 (提示用戶去 Tab 1)
+                    elif fname.endswith(('.pdf', '.docx', '.doc', '.ppt', '.pptx', '.jpg', '.png', '.jpeg')):
+                        st.warning(
+                            f"⚠️ 無法直接讀取 {f.name} (非純文字檔)。\n"
+                            "請先使用「🏭 資料清洗」頁面，將其內容轉換為文字後再貼上。", 
+                            icon="🚧"
+                        )
+                    
+                    # 3. 處理文字檔 (.txt, .md, .py, etc.)
                     else:
-                        # 嘗試讀取為文字 (TXT, MD, PY, CSV 等)
+                        raw_data = f.read()
+                        content = ""
+                        # 嘗試 UTF-8
                         try:
-                            content = f.read().decode('utf-8')
-                            notes += f"\n---\n【檔案：{f.name}】\n{content}"
+                            content = raw_data.decode('utf-8')
                         except UnicodeDecodeError:
-                            # 如果無法解碼 (例如 PDF, Word, Image)，給予提示
-                            st.toast(f"⚠️ 無法直接讀取內容: {f.name} (請確認是否為純文字檔)", icon="🚫")
+                            # 失敗則嘗試 Big5 (常見於香港舊電腦檔案)
+                            try:
+                                content = raw_data.decode('big5')
+                                st.caption(f"ℹ️ 已使用 Big5 編碼讀取：{f.name}")
+                            except UnicodeDecodeError:
+                                st.error(f"❌ 檔案讀取失敗：{f.name} (編碼無法識別，請轉存為 UTF-8)", icon="🚫")
+                        
+                        if content:
+                            notes += f"\n---\n【檔案：{f.name}】\n{content}"
 
     with c_main:
         # 檢查是否有內容 (文字筆記 或 音檔 都可以觸發顯示)
@@ -302,9 +320,7 @@ with tab_study:
                     st.session_state.messages.append({"role": "user", "content": q})
                     st.chat_message("user").write(q)
                     with st.chat_message("assistant"):
-                        # 如果沒有筆記，但用戶想問問題，避免報錯，給個預設值
                         context_notes = notes if notes else "（無筆記內容，請依常識回答）"
-                        
                         lang_instruction = "用廣東話回答" if lang_choice == "中文 (廣東話)" else "Answer in English"
                         rag = f"DSE 導師。{lang_instruction}。數學公式單個 $ 包住。\n筆記：{context_notes[:12000]}"
                         ans = client.chat.completions.create(model="deepseek-chat", messages=[{"role":"system","content":rag},{"role":"user","content":q}]).choices[0].message.content
